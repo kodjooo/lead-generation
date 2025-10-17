@@ -1,0 +1,123 @@
+"""Тесты парсинга и сохранения результатов SERP."""
+
+from contextlib import contextmanager
+from typing import Any, Dict, List, Tuple
+from unittest.mock import patch
+
+import pytest
+
+from app.modules.serp_ingest import SerpIngestService, SerpParseError, parse_serp_xml
+
+
+SAMPLE_XML = """
+<response>
+  <grouping>
+    <group>
+      <doc>
+        <url>https://example.com/products</url>
+        <domain>example.com</domain>
+        <title>Example Company</title>
+        <passages>
+          <passage>Лучшее решение для бизнеса</passage>
+        </passages>
+        <properties>
+          <property name="lang">ru</property>
+        </properties>
+      </doc>
+    </group>
+    <group>
+      <doc>
+        <url>beta.ru</url>
+        <title>Beta LLC</title>
+        <passages>
+          <passage>Агентство полного цикла</passage>
+        </passages>
+      </doc>
+    </group>
+  </grouping>
+</response>
+""".encode("utf-8")
+
+
+def test_parse_serp_xml_extracts_documents() -> None:
+    documents = parse_serp_xml(SAMPLE_XML)
+    assert len(documents) == 2
+    assert documents[0].domain == "example.com"
+    assert documents[0].language == "ru"
+    assert documents[1].url == "https://beta.ru/"
+    assert documents[1].snippet.startswith("Агентство")
+
+
+def test_parse_serp_xml_invalid_payload() -> None:
+    with pytest.raises(SerpParseError):
+        parse_serp_xml(b"<broken>")
+
+
+class DummyResult:
+    def __init__(self, value: str) -> None:
+        self._value = value
+
+    def scalar_one(self) -> str:
+        return self._value
+
+
+class DummySession:
+    def __init__(self) -> None:
+        self.calls: List[Tuple[Any, Dict[str, Any]]] = []
+        self.committed = False
+        self.closed = False
+
+    def execute(self, statement: Any, params: Dict[str, Any]) -> DummyResult:
+        self.calls.append((statement, params))
+        return DummyResult(f"id-{len(self.calls)}")
+
+    def commit(self) -> None:
+        self.committed = True
+
+    def rollback(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_serp_ingest_persists_results_and_companies() -> None:
+    session = DummySession()
+
+    @contextmanager
+    def fake_scope(_factory):  # type: ignore[override]
+        try:
+            yield session
+            session.commit()
+        finally:
+            session.close()
+
+    service = SerpIngestService(session_factory=lambda: session)
+
+    with patch(
+        "app.modules.serp_ingest.session_scope",
+        side_effect=lambda factory: fake_scope(factory),
+    ):
+        inserted = service.ingest("op-123", SAMPLE_XML)
+
+    assert len(inserted) == 2
+    assert inserted[0] == "id-1"
+    assert inserted[1] == "id-3"
+    assert session.committed is True
+    assert session.closed is True
+    assert len(session.calls) == 4
+
+    first_stmt_text = session.calls[0][0].text
+    second_stmt_text = session.calls[1][0].text
+    third_stmt_text = session.calls[2][0].text
+    assert "INSERT INTO serp_results" in first_stmt_text
+    assert "INSERT INTO companies" in second_stmt_text
+    assert "INSERT INTO serp_results" in third_stmt_text
+
+    params_result = session.calls[0][1]
+    assert params_result["domain"] == "example.com"
+    assert params_result["operation_id"] == "op-123"
+
+    params_company = session.calls[1][1]
+    assert params_company["domain"] == "example.com"
+    assert params_company["website_url"].startswith("https://example.com")

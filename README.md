@@ -1,0 +1,56 @@
+# Lead Generation Pipeline
+
+Проект автоматизирует поиск компаний через Yandex Search API, обогащение контактами и персонализированную рассылку писем. Вся инфраструктура ориентирована на работу в Docker.
+
+## Структура проекта
+
+- `app/` — исходный код служб (`main`, `scheduler`, `worker`).
+- `docs/` — требования, архитектура, план внедрения.
+- `Dockerfile` — базовый образ Python 3.12.
+- `docker-compose.yml` — оркестрация сервисов (`app`, `scheduler`, `worker`, `db`, `redis`).
+- `.env`, `.env.example` — переменные окружения (секреты не коммитим, `.env` добавлен в `.gitignore`).
+
+## Подготовка окружения
+
+```bash
+cp .env.example .env  # заполните значения согласно комментариям
+docker compose pull   # заранее загрузить базовые образы
+```
+
+## Быстрый старт в Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Сервисы:
+- `app` — оркестратор полного цикла (deferred → дедуп → enrichment → рассылка).
+- `scheduler` — постановка deferred-запросов и polling операций.
+- `worker` — enrichment контактов и отправка писем.
+- `db` — PostgreSQL 16 (storage для пайплайна).
+- `redis` — брокер задач/кэш.
+
+### Управление оркестратором
+
+Запустить оркестратор однократно:
+
+```bash
+docker compose run --rm app --mode once
+```
+
+Фоновый режим по умолчанию (`loop`) запускается в контейнерах `app`, `scheduler`, `worker` при `docker compose up`.
+
+## Развёртывание на удалённом сервере
+
+1. Установите Docker и плагин docker compose (например, `apt install docker.io docker-compose-plugin`).
+2. Создайте отдельного пользователя без пароля root-доступа, добавьте его в группу `docker`.
+3. Выполните `git pull https://github.com/kodjooo/lead-generation.git` в целевой директории и заполните `.env` секретами (используйте `scp`/`sftp` или менеджер секретов).
+4. Запустите `docker compose up -d --build` и убедитесь, что все сервисы перешли в состояние `healthy`.
+5. Настройте автоматический старт (systemd unit, cron `@reboot` или Docker restart policies уже включены).
+6. Организуйте бэкапы каталога `pg_data` (PostgreSQL) и аудит логов (`docker logs` или Loki/ELK).
+
+## Тестирование
+
+```bash
+docker compose run --rm app python -m pytest
+```

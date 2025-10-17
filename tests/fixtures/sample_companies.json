@@ -1,0 +1,14 @@
+[
+  {
+    "name": "ООО Альфа",
+    "domain": "alpha.ru",
+    "industry": "Маркетинг",
+    "region": "Москва"
+  },
+  {
+    "name": "ИП Бета",
+    "domain": "beta.ru",
+    "industry": "IT консалтинг",
+    "region": "Санкт-Петербург"
+  }
+]
