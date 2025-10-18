@@ -54,6 +54,34 @@ docker compose run --rm app --mode once
 
   Ключ храните в Secret Manager или CI и не коммитьте в репозиторий.
 
+### Google Sheets
+
+- `GOOGLE_SHEET_ID` — идентификатор таблицы с листом `NICHES_INPUT` (из URL вида `https://docs.google.com/spreadsheets/d/<ID>/...`).
+- `GOOGLE_SHEET_TAB` — имя вкладки (по умолчанию `NICHES_INPUT`).
+- `GOOGLE_SA_KEY_FILE` / `GOOGLE_SA_KEY_JSON` — ключ сервисного аккаунта Google с доступом на чтение/редактирование таблицы.
+
+## Синхронизация запросов из Google Sheets
+
+1. Заполните таблицу на листе `NICHES_INPUT` (столбцы `niche`, `city`, `country`, `batch_tag`).
+2. Выполните синхронизацию:
+
+   ```bash
+   docker compose run --rm app python -m app.tools.sync_sheet
+   # или выбрать конкретную партию
+   docker compose run --rm app python -m app.tools.sync_sheet --batch-tag batch-2025-10
+   ```
+
+   Скрипт создаст записи в `serp_queries` и обновит служебные колонки листа (`status`, `generated_count` и т.д.).
+
+## Миграции БД
+
+После обновления проекта выполните SQL-миграции:
+
+```bash
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0001_init.sql
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0002_reporting.sql
+```
+
 ## Развёртывание на удалённом сервере
 
 1. Установите Docker и плагин docker compose (например, `apt install docker.io docker-compose-plugin`).

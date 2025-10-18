@@ -216,3 +216,32 @@
 ### Изменения клиента Yandex
 - `YandexDeferredClient` теперь принимает `token_provider`, вызывает его перед каждым запросом и выбрасывает исключение при отсутствии токена.
 - Добавлены тесты на использование провайдера и на сам генератор IAM токенов (`tests/test_iam_provider.py`, `tests/test_yandex_deferred.py`).
+
+## Этап 12. Интеграция вводной витрины
+
+### Google Sheets
+- Настройки (ID таблицы, вкладка, ключ сервисного аккаунта) вынесены в `GoogleSheetsSettings` (`app/config.py`), переменные окружения добавлены в `.env.example`.
+- Модуль `app/modules/sheet_sync.py` реализует адаптер к Google Sheets (через gspread) и сервис `SheetSyncService`, который читает строки листа `NICHES_INPUT`, формирует `NicheRow` и управляет обновлением служебных полей (`status`, `generated_count`, `db_*`, `last_error`).
+- Добавлен CLI `python -m app.tools.sync_sheet` для ручного запуска синхронизации, включая фильтрацию по `batch_tag`.
+
+## Этап 13. Генерация запросов и постановка в очередь
+
+### Алгоритм генерации
+- Модуль `app/modules/query_generator.py` реализует `QueryGenerator`, который строит до 6 поисковых запросов на нишу: базовый (`lang:ru + niche + place + отрицательные домены`) и набор триггеров из `DEFAULT_CONFIG`.
+- Планировщик распределяет `scheduled_for` внутри ближайшего ночного окна (20:00–05:59 UTC) с шагом 45 секунд; регион определяется по справочнику (город → страна → fallback 225).
+- Метаданные (`niche`, `city`, `country`, `trigger`, `batch_tag`, `language`, `selection`) записываются в JSON и хранятся в `serp_queries.metadata`.
+
+### Очередь и логирование
+- `QueryRepository` сохраняет запросы в `serp_queries` (ON CONFLICT по `query_hash`) и ведёт журнал партий в таблице `search_batch_logs`.
+- На основе результатов обновляются счетчики в Google Sheets и формируется статус строки (`done` / `skipped` / `error`).
+- Для тестов добавлены сценарии `tests/test_query_generator.py` и `tests/test_sheet_sync.py`.
+
+## Этап 14. Отчётные витрины и дополнительные таблицы
+
+### Миграции
+- Новый файл `migrations/0002_reporting.sql` добавляет таблицы `search_ops`, `search_batch_logs`, расширяет `companies` (столбцы `source`, `first_seen_at`, `last_seen_at`) и создаёт представления `daily_summaries`, `top_domains`, `company_status_view`.
+- `SerpIngestService` обновлён: при вставке компаниям выставляются `source='yandex_search_api'`, `first_seen_at`, `last_seen_at` актуализируются на каждый матч.
+
+### Отчётность
+- `daily_summaries` агрегирует количество запросов по дням и статусам, `top_domains` показывает домены с наибольшим числом попаданий в SERP, `company_status_view` объединяет компании с контактами и статистикой рассылок.
+- Через таблицу `search_batch_logs` можно отслеживать партии генерации (сколько запросов сгенерировано, вставлено, дубликаты, окно расписания, ошибки).

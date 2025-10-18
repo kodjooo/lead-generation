@@ -4,8 +4,7 @@ import json
 
 import httpx
 import respx
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from Crypto.PublicKey import RSA
 
 from app.modules.utils.iam import (
     IamTokenProvider,
@@ -15,12 +14,8 @@ from app.modules.utils.iam import (
 
 
 def _build_service_account_key_json() -> str:
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).decode()
+    private_key = RSA.generate(2048)
+    pem = private_key.export_key(format="PEM", pkcs=8).decode()
     data = {
         "service_account_id": "aje1234567890abcdef",
         "id": "ab1cdef2ghij3klm4567",

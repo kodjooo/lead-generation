@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import time
+from base64 import urlsafe_b64encode
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import httpx
-import jwt
+from Crypto.Hash import SHA256
+from Crypto.PublicKey import ECC, RSA
+from Crypto.Signature import DSS, pss
 
 LOGGER = logging.getLogger("app.iam")
 TOKEN_ENDPOINT = "https://iam.api.cloud.yandex.net/iam/v1/tokens"
@@ -66,21 +70,39 @@ class IamTokenProvider:
         LOGGER.debug("IAM токен обновлён, истекает в %s", expires_at)
         return token
 
+    @staticmethod
+    def _base64url(data: bytes) -> str:
+        return urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
     def _build_jwt(self, now: float) -> str:
-        algorithm = "PS256" if "RSA" in self._key.key_algorithm else "ES256"
-        headers = {"kid": self._key.key_id}
+        algorithm = "PS256" if "RSA" in self._key.key_algorithm.upper() else "ES256"
+        header = {"alg": algorithm, "typ": "JWT", "kid": self._key.key_id}
         payload = {
             "aud": TOKEN_ENDPOINT,
             "iss": self._key.service_account_id,
             "iat": int(now),
             "exp": int(now) + 3600,
         }
-        return jwt.encode(payload, self._key.private_key, algorithm=algorithm, headers=headers)
+        header_segment = self._base64url(json.dumps(header, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        payload_segment = self._base64url(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
+
+        if algorithm == "PS256":
+            private_key = RSA.import_key(self._key.private_key)
+            signer = pss.new(private_key)
+            signature = signer.sign(SHA256.new(signing_input))
+        elif algorithm == "ES256":
+            private_key = ECC.import_key(self._key.private_key)
+            signer = DSS.new(private_key, "fips-186-3", encoding="binary")
+            signature = signer.sign(SHA256.new(signing_input))
+        else:
+            raise RuntimeError(f"Неизвестный алгоритм ключа: {self._key.key_algorithm}")
+
+        signature_segment = self._base64url(signature)
+        return f"{header_segment}.{payload_segment}.{signature_segment}"
 
     @staticmethod
     def _parse_expiration(expires_at: str) -> float:
-        from datetime import datetime
-
         normalized = expires_at.replace("Z", "+00:00")
         dt = datetime.fromisoformat(normalized)
         return dt.timestamp()

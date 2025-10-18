@@ -98,12 +98,33 @@ RETURNING id;
 
 
 UPSERT_COMPANY_SQL = """
-INSERT INTO companies (name, canonical_domain, website_url, status, dedupe_hash, attributes)
-VALUES (:name, :domain, :website_url, 'new', :dedupe_hash, :attributes::jsonb)
+INSERT INTO companies (
+    name,
+    canonical_domain,
+    website_url,
+    status,
+    dedupe_hash,
+    attributes,
+    source,
+    first_seen_at,
+    last_seen_at
+)
+VALUES (
+    :name,
+    :domain,
+    :website_url,
+    'new',
+    :dedupe_hash,
+    :attributes::jsonb,
+    'yandex_search_api',
+    NOW(),
+    NOW()
+)
 ON CONFLICT (dedupe_hash)
 DO UPDATE SET
     website_url = COALESCE(companies.website_url, EXCLUDED.website_url),
     attributes = companies.attributes || EXCLUDED.attributes,
+    last_seen_at = NOW(),
     updated_at = NOW()
 RETURNING id;
 """

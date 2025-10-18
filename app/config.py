@@ -37,6 +37,16 @@ class SMTPSettings:
 
 
 @dataclass(frozen=True)
+class GoogleSheetsSettings:
+    """Настройки доступа к Google Sheets."""
+
+    sheet_id: str
+    tab_name: str
+    service_account_key_path: str | None
+    service_account_key_json: str | None
+
+
+@dataclass(frozen=True)
 class Settings:
     """Глобальные настройки приложения."""
 
@@ -49,6 +59,7 @@ class Settings:
     redis_url: str
     database: DatabaseSettings
     smtp: SMTPSettings
+    google_sheets: GoogleSheetsSettings
 
 
 def _env(key: str, default: str = "") -> str:
@@ -75,6 +86,13 @@ def get_settings() -> Settings:
         sender=_env("SMTP_FROM_EMAIL", ""),
     )
 
+    google_sheets = GoogleSheetsSettings(
+        sheet_id=_env("GOOGLE_SHEET_ID"),
+        tab_name=_env("GOOGLE_SHEET_TAB", "NICHES_INPUT"),
+        service_account_key_path=_env("GOOGLE_SA_KEY_FILE") or None,
+        service_account_key_json=_env("GOOGLE_SA_KEY_JSON") or None,
+    )
+
     return Settings(
         timezone=_env("APP_TIMEZONE", "Europe/Moscow"),
         yandex_folder_id=_env("YANDEX_CLOUD_FOLDER_ID"),
@@ -85,4 +103,5 @@ def get_settings() -> Settings:
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,
         smtp=smtp,
+        google_sheets=google_sheets,
     )

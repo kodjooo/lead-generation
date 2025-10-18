@@ -13,6 +13,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./secure/authorized_key.json:/secure/authorized_key.json:ro
       - ./tests:/app/tests
     restart: unless-stopped
 
@@ -30,6 +31,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./secure/authorized_key.json:/secure/authorized_key.json:ro
     restart: unless-stopped
 
   worker:
@@ -46,6 +48,7 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      - ./secure/authorized_key.json:/secure/authorized_key.json:ro
     restart: unless-stopped
 
   db:
