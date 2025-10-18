@@ -41,8 +41,10 @@ class Settings:
     """Глобальные настройки приложения."""
 
     timezone: str
-    yandex_iam_token: str
     yandex_folder_id: str
+    yandex_iam_token: str | None
+    yandex_sa_key_path: str | None
+    yandex_sa_key_json: str | None
     openai_api_key: str
     redis_url: str
     database: DatabaseSettings
@@ -75,11 +77,12 @@ def get_settings() -> Settings:
 
     return Settings(
         timezone=_env("APP_TIMEZONE", "Europe/Moscow"),
-        yandex_iam_token=_env("YANDEX_CLOUD_IAM_TOKEN"),
         yandex_folder_id=_env("YANDEX_CLOUD_FOLDER_ID"),
+        yandex_iam_token=_env("YANDEX_CLOUD_IAM_TOKEN") or None,
+        yandex_sa_key_path=_env("YANDEX_CLOUD_SA_KEY_FILE") or None,
+        yandex_sa_key_json=_env("YANDEX_CLOUD_SA_KEY_JSON") or None,
         openai_api_key=_env("OPENAI_API_KEY"),
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,
         smtp=smtp,
     )
-

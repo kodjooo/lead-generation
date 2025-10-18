@@ -15,6 +15,7 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("SMTP_HOST", "smtp.test")
     monkeypatch.setenv("SMTP_PORT", "2525")
+    monkeypatch.setenv("YANDEX_CLOUD_FOLDER_ID", "folder-test")
 
     settings = get_settings()
 
@@ -29,5 +30,7 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     assert settings.smtp.username == "test-smtp"
     assert settings.smtp.password == "test-smtp-password"
     assert settings.smtp.sender == "leadgen@example.com"
+    assert settings.yandex_folder_id == "folder-test"
+    assert settings.yandex_iam_token == "test-token"
 
     get_settings.cache_clear()  # type: ignore[attr-defined]

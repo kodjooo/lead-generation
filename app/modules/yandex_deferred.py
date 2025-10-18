@@ -156,7 +156,8 @@ class YandexDeferredClient:
     def __init__(
         self,
         *,
-        iam_token: str,
+        iam_token: str | None = None,
+        token_provider: Optional[Callable[[], str]] = None,
         folder_id: str,
         timezone: str = "Europe/Moscow",
         enforce_night_window: bool = True,
@@ -168,7 +169,8 @@ class YandexDeferredClient:
         sleep_func: Callable[[float], None] | None = None,
         now_func: Callable[[], datetime] | None = None,
     ) -> None:
-        self.iam_token = iam_token
+        self._iam_token = iam_token
+        self._token_resolver = token_provider
         self.folder_id = folder_id
         self.timezone = ZoneInfo(timezone)
         self.enforce_night_window = enforce_night_window
@@ -189,10 +191,20 @@ class YandexDeferredClient:
         return self._now_func() if self._now_func else datetime.now(self.timezone)
 
     def _headers(self) -> Dict[str, str]:
+        token = self._resolve_token()
         return {
-            "Authorization": f"Bearer {self.iam_token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
+
+    def _resolve_token(self) -> str:
+        if self._token_resolver:
+            token = self._token_resolver()
+            if token:
+                return token
+        if self._iam_token:
+            return self._iam_token
+        raise YandexAPIError("IAM токен не задан.")
 
     def _respect_limits(self, rules: Iterable[RateLimitRule]) -> None:
         current_time = self._now()

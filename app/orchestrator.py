@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -18,6 +19,12 @@ from app.modules.generate_email_gpt import CompanyBrief, EmailGenerator, OfferBr
 from app.modules.send_email import EmailSender
 from app.modules.serp_ingest import SerpIngestService
 from app.modules.utils.db import get_session_factory, session_scope
+from app.modules.utils.iam import (
+    IamTokenProvider,
+    StaticTokenProvider,
+    load_service_account_key_from_file,
+    load_service_account_key_from_string,
+)
 from app.modules.yandex_deferred import DeferredQueryParams, OperationResponse, YandexDeferredClient
 
 LOGGER = logging.getLogger("app.orchestrator")
@@ -118,8 +125,9 @@ class PipelineOrchestrator:
         self.config = config or OrchestratorConfig()
         self.session_factory = get_session_factory()
         settings = get_settings()
+        token_provider = self._build_iam_provider(settings)
         self.deferred_client = YandexDeferredClient(
-            iam_token=settings.yandex_iam_token,
+            token_provider=token_provider.get_token,
             folder_id=settings.yandex_folder_id,
             timezone=settings.timezone,
         )
@@ -132,6 +140,25 @@ class PipelineOrchestrator:
             pains=["Расширение воронки B2B", "Высокая стоимость лида"],
             value_proposition="Автоматизируем поиск релевантных компаний и персонализируем писма в течение суток.",
             call_to_action="Готовы обсудить 15-минутный пилот на этой неделе?",
+        )
+        self._token_provider = token_provider
+
+    @staticmethod
+    def _build_iam_provider(settings) -> StaticTokenProvider | IamTokenProvider:
+        if settings.yandex_iam_token:
+            return StaticTokenProvider(settings.yandex_iam_token)
+
+        if settings.yandex_sa_key_path:
+            key = load_service_account_key_from_file(Path(settings.yandex_sa_key_path))
+            return IamTokenProvider(key=key)
+
+        if settings.yandex_sa_key_json:
+            key = load_service_account_key_from_string(settings.yandex_sa_key_json)
+            return IamTokenProvider(key=key)
+
+        raise RuntimeError(
+            "Не настроена авторизация Yandex Cloud: задайте YANDEX_CLOUD_IAM_TOKEN "
+            "или путь/JSON ключа сервисного аккаунта."
         )
 
     def run_once(self) -> None:

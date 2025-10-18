@@ -40,6 +40,20 @@ docker compose run --rm app --mode once
 
 Фоновый режим по умолчанию (`loop`) запускается в контейнерах `app`, `scheduler`, `worker` при `docker compose up`.
 
+## Переменные окружения
+
+### Yandex Cloud
+
+- `YANDEX_CLOUD_FOLDER_ID` — ID каталога (консоль YC → «Обзор»).
+- `YANDEX_CLOUD_IAM_TOKEN` — можно оставить пустым; при наличии ключа сервисного аккаунта пайплайн возьмёт токен автоматически.
+- `YANDEX_CLOUD_SA_KEY_FILE` / `YANDEX_CLOUD_SA_KEY_JSON` — путь или содержимое ключа сервисного аккаунта. Получить ключ:
+
+  ```bash
+  yc iam key create --service-account-name <sa_name> --output key.json
+  ```
+
+  Ключ храните в Secret Manager или CI и не коммитьте в репозиторий.
+
 ## Развёртывание на удалённом сервере
 
 1. Установите Docker и плагин docker compose (например, `apt install docker.io docker-compose-plugin`).

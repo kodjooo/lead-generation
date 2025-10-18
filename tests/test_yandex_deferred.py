@@ -140,3 +140,30 @@ def test_operation_response_decode_missing_rawdata() -> None:
     response = OperationResponse.from_dict({"id": "op-1", "done": True, "response": {}})
     with pytest.raises(InvalidResponseError):
         response.decode_raw_data()
+
+
+@respx.mock
+def test_create_uses_token_provider() -> None:
+    provider_calls = {"count": 0}
+
+    def provider() -> str:
+        provider_calls["count"] += 1
+        return "dynamic-token"
+
+    client = YandexDeferredClient(
+        token_provider=provider,
+        folder_id="folder",
+        enforce_night_window=False,
+    )
+
+    route = respx.post(SEARCH_ASYNC_URL).mock(
+        return_value=httpx.Response(200, json={"id": "op-id", "done": False})
+    )
+
+    params = DeferredQueryParams(query_text="token test")
+    client.create_deferred_search(params)
+
+    assert provider_calls["count"] == 1
+    assert route.called
+    auth_header = route.calls[0].request.headers.get("authorization")
+    assert auth_header == "Bearer dynamic-token"
