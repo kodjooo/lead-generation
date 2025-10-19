@@ -25,8 +25,6 @@ def main() -> None:
             except NightWindowViolation as exc:
                 LOGGER.info("Вне ночного окна: %s", exc)
 
-            processed = orchestrator.poll_operations()
-            LOGGER.info("Обработано операций: %s", processed)
             time.sleep(orchestrator.config.poll_interval_seconds)
     except KeyboardInterrupt:
         LOGGER.info("Планировщик остановлен пользователем.")

@@ -39,6 +39,7 @@ def main() -> None:
         OrchestratorConfig(
             batch_size=args.batch_size,
             poll_interval_seconds=args.poll_interval,
+            enable_scheduling=False,
         )
     )
 

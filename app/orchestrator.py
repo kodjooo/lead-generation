@@ -117,6 +117,7 @@ WHERE id = :query_id;
 class OrchestratorConfig:
     batch_size: int = 5
     poll_interval_seconds: int = 60
+    enable_scheduling: bool = True
 
 
 class PipelineOrchestrator:
@@ -181,7 +182,9 @@ class PipelineOrchestrator:
     def run_once(self) -> None:
         self._maybe_sync_sheet()
         LOGGER.info("Выполнение цикла оркестрации.")
-        scheduled = self._schedule_deferred_queries()
+        scheduled = 0
+        if self.config.enable_scheduling:
+            scheduled = self._schedule_deferred_queries()
         processed = self._poll_operations()
         if processed:
             self.deduplicator.run()
@@ -203,6 +206,9 @@ class PipelineOrchestrator:
 
     def schedule_deferred_queries(self) -> int:
         """Публичный метод для планировщика."""
+        if not self.config.enable_scheduling:
+            LOGGER.debug("Запрос на постановку операций пропущен: планирование отключено для этого сервиса.")
+            return 0
         return self._schedule_deferred_queries()
 
     def poll_operations(self) -> int:
