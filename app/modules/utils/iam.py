@@ -87,12 +87,13 @@ class IamTokenProvider:
         payload_segment = self._base64url(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
         signing_input = f"{header_segment}.{payload_segment}".encode("ascii")
 
+        key_pem = self._prepare_private_key(self._key.private_key)
         if algorithm == "PS256":
-            private_key = RSA.import_key(self._key.private_key)
+            private_key = RSA.import_key(key_pem)
             signer = pss.new(private_key)
             signature = signer.sign(SHA256.new(signing_input))
         elif algorithm == "ES256":
-            private_key = ECC.import_key(self._key.private_key)
+            private_key = ECC.import_key(key_pem)
             signer = DSS.new(private_key, "fips-186-3", encoding="binary")
             signature = signer.sign(SHA256.new(signing_input))
         else:
@@ -100,6 +101,28 @@ class IamTokenProvider:
 
         signature_segment = self._base64url(signature)
         return f"{header_segment}.{payload_segment}.{signature_segment}"
+
+    @staticmethod
+    def _prepare_private_key(raw_key: str) -> bytes:
+        import textwrap
+
+        key = raw_key.replace("\r", "").replace("\\n", "\n").strip()
+        if "-----BEGIN" in key:
+            key = key[key.index("-----BEGIN") :]
+        if key.startswith("-----BEGIN") and "-----END" in key:
+            lines = [line.strip() for line in key.splitlines() if line.strip()]
+            header = lines[0]
+            footer = lines[-1]
+            body_lines = lines[1:-1]
+        else:
+            body_lines = [key.replace(" ", "")]  # base64 без заголовков
+            header = "-----BEGIN PRIVATE KEY-----"
+            footer = "-----END PRIVATE KEY-----"
+
+        body_joined = "".join(part.strip() for part in body_lines)
+        body_wrapped = "\n".join(textwrap.wrap(body_joined, 64))
+        normalized = f"{header}\n{body_wrapped}\n{footer}"
+        return normalized.encode("utf-8")
 
     @staticmethod
     def _parse_expiration(expires_at: str) -> float:
