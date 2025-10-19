@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
         '"бриф"',
     ],
     "neg_sites": [
-        "avito.ru",
+        "domain:avito.ru",
         "yandex.ru",
         "2gis.ru",
         "hh.ru",
@@ -224,7 +224,20 @@ class QueryGenerator:
         return self._region_fallback
 
     def _negatives(self) -> str:
-        return " ".join(f"-site:{domain}" for domain in self._neg_sites)
+        tokens: List[str] = []
+        for entry in self._neg_sites:
+            raw = entry.strip()
+            if not raw:
+                continue
+            if ":" in raw:
+                prefix, value = raw.split(":", 1)
+                prefix = prefix.strip().lower()
+                value = value.strip()
+                if prefix in {"site", "domain", "host"} and value:
+                    tokens.append(f"-{prefix}:{value}")
+                    continue
+            tokens.append(f"-site:{raw}")
+        return " ".join(tokens)
 
     def _place_fragment(self, row: NicheRow) -> str:
         if row.city:
