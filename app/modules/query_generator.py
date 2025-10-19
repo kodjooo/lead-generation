@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Iterable, List, Optional
 
 DEFAULT_CONFIG = {
     "language": "ru",
-    "night_window": {"start_utc": "20:00", "end_utc": "05:59"},
+    "night_window": {"start_local": "00:00", "end_local": "07:59", "timezone": "Europe/Moscow"},
     "spacing_seconds": 45,
     "region_fallback_lr": 225,
     "max_queries_per_niche": 6,
@@ -81,8 +82,9 @@ class QueryGenerator:
         self._max_queries = int(self.config.get("max_queries_per_niche", 6))
         self._language = self.config.get("language", "ru")
         night_cfg = self.config.get("night_window", {})
-        self._window_start = self._parse_time(night_cfg.get("start_utc", "20:00"))
-        self._window_end = self._parse_time(night_cfg.get("end_utc", "05:59"))
+        self._night_tz = ZoneInfo(night_cfg.get("timezone", "UTC"))
+        self._window_start_local = self._parse_time(night_cfg.get("start_local", "00:00"))
+        self._window_end_local = self._parse_time(night_cfg.get("end_local", "07:59"))
         self._neg_sites = list(self.config.get("neg_sites", []))
         self._triggers = list(self.config.get("triggers", []))
         self._regions_map = {
@@ -93,7 +95,7 @@ class QueryGenerator:
     @staticmethod
     def _parse_time(value: str) -> time:
         hours, minutes = value.split(":", 1)
-        return time(int(hours), int(minutes), tzinfo=timezone.utc)
+        return time(int(hours), int(minutes))
 
     @staticmethod
     def _normalize_key(value: str | None) -> str:
@@ -140,16 +142,16 @@ class QueryGenerator:
         return queries
 
     def _window_bounds(self, reference_date) -> tuple[datetime, timedelta]:
-        start_dt = datetime.combine(reference_date, self._window_start)
-        end_dt = datetime.combine(reference_date, self._window_end)
-        if self._window_end <= self._window_start:
-            end_dt += timedelta(days=1)
-        duration = end_dt - start_dt
-        return start_dt, duration
+        start_local = datetime.combine(reference_date, self._window_start_local, self._night_tz)
+        end_local = datetime.combine(reference_date, self._window_end_local, self._night_tz)
+        if self._window_end_local <= self._window_start_local:
+            end_local += timedelta(days=1)
+        duration = end_local - start_local
+        return start_local.astimezone(timezone.utc), duration
 
     def _next_window_start(self, now: datetime) -> tuple[datetime, datetime]:
         start_today, duration = self._window_bounds(now.date())
-        if self._window_end <= self._window_start and now < start_today:
+        if self._window_end_local <= self._window_start_local and now < start_today:
             start_prev = start_today - timedelta(days=1)
             end_prev = start_prev + duration
             if start_prev <= now <= end_prev:
