@@ -102,7 +102,7 @@ class DeferredQueryParams:
                 "docs_in_group": self.docs_in_group,
             },
             "max_passages": self.max_passages,
-            "region": self.region,
+            "region": str(self.region),
             "l10n": self.localization,
             "folder_id": folder_id,
             "response_format": self.response_format,
