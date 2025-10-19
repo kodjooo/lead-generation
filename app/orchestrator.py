@@ -52,7 +52,7 @@ VALUES (
     :operation_id,
     'created',
     NOW(),
-    :metadata::jsonb
+    CAST(:metadata AS JSONB)
 )
 ON CONFLICT (operation_id) DO NOTHING;
 """
@@ -77,8 +77,8 @@ UPDATE serp_operations
 SET status = :status,
     completed_at = :completed_at,
     retry_count = retry_count + :increment_retry,
-    error_payload = :error_payload::jsonb,
-    metadata = metadata || :metadata::jsonb,
+    error_payload = CAST(:error_payload AS JSONB),
+    metadata = metadata || CAST(:metadata AS JSONB),
     modified_at = NOW()
 WHERE id = :operation_id;
 """
