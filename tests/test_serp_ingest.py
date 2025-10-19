@@ -98,7 +98,11 @@ def test_serp_ingest_persists_results_and_companies() -> None:
         "app.modules.serp_ingest.session_scope",
         side_effect=lambda factory: fake_scope(factory),
     ):
-        inserted = service.ingest("op-123", SAMPLE_XML)
+        inserted = service.ingest(
+            "11111111-1111-1111-1111-111111111111",
+            SAMPLE_XML,
+            yandex_operation_id="op-123",
+        )
 
     assert len(inserted) == 2
     assert inserted[0] == "id-1"
@@ -116,7 +120,9 @@ def test_serp_ingest_persists_results_and_companies() -> None:
 
     params_result = session.calls[0][1]
     assert params_result["domain"] == "example.com"
-    assert params_result["operation_id"] == "op-123"
+    assert params_result["operation_id"] == "11111111-1111-1111-1111-111111111111"
+    assert params_result["metadata"].startswith("{")
+    assert '"yandex_operation_id": "op-123"' in params_result["metadata"]
 
     params_company = session.calls[1][1]
     assert params_company["domain"] == "example.com"

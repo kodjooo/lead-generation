@@ -127,7 +127,7 @@
 - Сниппеты очищаются от лишних пробелов, URL приводятся к https-схеме и без фрагментов.
 
 ### Сохранение в БД
-- `SerpIngestService` сохраняет результаты в `serp_results` (upsert по `(operation_id, url)`), сохраняет язык и метаданные (`{"source": "yandex"}`).
+- `SerpIngestService` сохраняет результаты в `serp_results` (upsert по `(operation_id, url)`), язык и метаданные (`{"source": "yandex", "language": "...", "yandex_operation_id": "spr..."}`).
 - Для каждой записи создаётся/обновляется компания в `companies` по `dedupe_hash` (на основе домена), обновляется `website_url` и атрибуты.
 - Все операции выполняются в транзакциях через `session_scope`; при конфликте данные обновляются.
 

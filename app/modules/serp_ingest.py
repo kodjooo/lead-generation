@@ -85,7 +85,7 @@ def parse_serp_xml(xml_payload: bytes) -> List[SerpDocument]:
 
 INSERT_SERP_RESULT_SQL = """
 INSERT INTO serp_results (operation_id, url, domain, title, snippet, position, language, metadata)
-VALUES (:operation_id, :url, :domain, :title, :snippet, :position, :language, :metadata::jsonb)
+VALUES (:operation_id, :url, :domain, :title, :snippet, :position, :language, CAST(:metadata AS JSONB))
 ON CONFLICT (operation_id, url)
 DO UPDATE SET
     title = EXCLUDED.title,
@@ -115,7 +115,7 @@ VALUES (
     :website_url,
     'new',
     :dedupe_hash,
-    :attributes::jsonb,
+    CAST(:attributes AS JSONB),
     'yandex_search_api',
     NOW(),
     NOW()
@@ -136,35 +136,59 @@ class SerpIngestService:
     def __init__(self, session_factory: Optional[sessionmaker[Session]] = None) -> None:
         self.session_factory = session_factory or get_session_factory()
 
-    def ingest(self, operation_id: str, xml_payload: bytes) -> List[str]:
+    def ingest(
+        self,
+        operation_db_id: str,
+        xml_payload: bytes,
+        *,
+        yandex_operation_id: str | None = None,
+    ) -> List[str]:
         """Парсит и сохраняет результаты выдачи для операции."""
         documents = parse_serp_xml(xml_payload)
         if not documents:
-            LOGGER.info("Операция %s не содержит документов для сохранения.", operation_id)
+            LOGGER.info("Операция %s не содержит документов для сохранения.", operation_db_id)
             return []
 
         inserted: List[str] = []
         with session_scope(self.session_factory) as session:
             for document in documents:
-                result_id = self._upsert_result(session, operation_id, document)
+                result_id = self._upsert_result(
+                    session,
+                    operation_db_id,
+                    document,
+                    yandex_operation_id=yandex_operation_id,
+                )
                 inserted.append(result_id)
                 self._ensure_company(session, document)
 
         return inserted
 
-    def _upsert_result(self, session: Session, operation_id: str, document: SerpDocument) -> str:
-        metadata = json.dumps({"language": document.language, "source": "yandex"})
+    def _upsert_result(
+        self,
+        session: Session,
+        operation_db_id: str,
+        document: SerpDocument,
+        *,
+        yandex_operation_id: str | None = None,
+    ) -> str:
+        metadata_payload = {
+            "language": document.language,
+            "source": "yandex",
+        }
+        if yandex_operation_id:
+            metadata_payload["yandex_operation_id"] = yandex_operation_id
+
         result = session.execute(
             text(INSERT_SERP_RESULT_SQL),
             {
-                "operation_id": operation_id,
+                "operation_id": operation_db_id,
                 "url": document.url,
                 "domain": document.domain,
                 "title": document.title,
                 "snippet": document.snippet,
                 "position": document.position,
                 "language": document.language,
-                "metadata": metadata,
+                "metadata": json.dumps(metadata_payload),
             },
         )
         return str(result.scalar_one())

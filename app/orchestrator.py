@@ -290,7 +290,7 @@ class PipelineOrchestrator:
                     metadata = {"last_checked": datetime.now(timezone.utc).isoformat()}
 
                     if operation.done:
-                        self._handle_completed_operation(session, row["query_id"], operation)
+                        self._handle_completed_operation(session, row["id"], row["query_id"], operation)
                         processed += 1
                         status = "done"
                         completed_at = datetime.now(timezone.utc)
@@ -323,14 +323,24 @@ class PipelineOrchestrator:
                     )
             return processed
 
-    def _handle_completed_operation(self, session: Session, query_id: str, operation: OperationResponse) -> None:
+    def _handle_completed_operation(
+        self,
+        session: Session,
+        operation_db_id: str,
+        query_id: str,
+        operation: OperationResponse,
+    ) -> None:
         try:
             raw_xml = operation.decode_raw_data()
         except Exception as exc:  # noqa: BLE001
             LOGGER.error("Не удалось декодировать ответ операции %s: %s", operation.id, exc)
             return
 
-        self.serp_ingest.ingest(operation.id, raw_xml)
+        self.serp_ingest.ingest(
+            operation_db_id,
+            raw_xml,
+            yandex_operation_id=operation.id,
+        )
         session.execute(
             text(UPDATE_QUERY_STATUS_SQL),
             {"query_id": query_id, "status": "completed"},
