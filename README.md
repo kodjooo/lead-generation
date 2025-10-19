@@ -86,6 +86,7 @@ docker compose run --rm app --mode once
 ```bash
 docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0001_init.sql
 docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0002_reporting.sql
+docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0003_add_modified_at_serp_operations.sql
 ```
 
 ## Развёртывание на удалённом сервере
