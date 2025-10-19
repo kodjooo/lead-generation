@@ -14,6 +14,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./secure/authorized_key.json:/secure/authorized_key.json:ro
+      - ./secure/google-credentials.json:/secure/google-credentials.json:ro
       - ./tests:/app/tests
     restart: unless-stopped
 
@@ -32,6 +33,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./secure/authorized_key.json:/secure/authorized_key.json:ro
+      - ./secure/google-credentials.json:/secure/google-credentials.json:ro
     restart: unless-stopped
 
   worker:
@@ -49,6 +51,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./secure/authorized_key.json:/secure/authorized_key.json:ro
+      - ./secure/google-credentials.json:/secure/google-credentials.json:ro
     restart: unless-stopped
 
   db:

@@ -160,7 +160,7 @@ class GoogleSheetAdapter:
             start_col = self._header_map[STATUS_COLUMNS[0]]
             end_col = self._header_map[STATUS_COLUMNS[-1]]
             range_a1 = (
-                f"{self._tab_name}!{self._column_letter(start_col)}{update.row_index}:"
+                f"{self._column_letter(start_col)}{update.row_index}:"
                 f"{self._column_letter(end_col)}{update.row_index}"
             )
             requests.append({"range": range_a1, "values": [values]})
@@ -188,7 +188,7 @@ class QueryRepository:
                 stmt = text(
                     """
                     INSERT INTO serp_queries (query_text, query_hash, region_code, is_night_window, status, scheduled_for, metadata)
-                    VALUES (:query_text, :query_hash, :region_code, TRUE, 'pending', :scheduled_for, :metadata::jsonb)
+                    VALUES (:query_text, :query_hash, :region_code, TRUE, 'pending', :scheduled_for, CAST(:metadata AS JSONB))
                     ON CONFLICT (query_hash) DO NOTHING
                     RETURNING id
                     """
