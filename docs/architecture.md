@@ -223,6 +223,7 @@
 - Настройки (ID таблицы, вкладка, ключ сервисного аккаунта) вынесены в `GoogleSheetsSettings` (`app/config.py`), переменные окружения добавлены в `.env.example`.
 - Модуль `app/modules/sheet_sync.py` реализует адаптер к Google Sheets (через gspread) и сервис `SheetSyncService`, который читает строки листа `NICHES_INPUT`, формирует `NicheRow` и управляет обновлением служебных полей (`status`, `generated_count`, `db_*`, `last_error`).
 - Добавлен CLI `python -m app.tools.sync_sheet` для ручного запуска синхронизации, включая фильтрацию по `batch_tag`.
+- Оркестратор вызывает синхронизацию автоматически каждые `SHEET_SYNC_INTERVAL_MINUTES`, если `SHEET_SYNC_ENABLED=true`; результаты логируются и фиксируются в таблице `search_batch_logs`.
 
 ## Этап 13. Генерация запросов и постановка в очередь
 

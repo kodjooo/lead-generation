@@ -59,6 +59,9 @@ docker compose run --rm app --mode once
 - `GOOGLE_SHEET_ID` — идентификатор таблицы с листом `NICHES_INPUT` (из URL вида `https://docs.google.com/spreadsheets/d/<ID>/...`).
 - `GOOGLE_SHEET_TAB` — имя вкладки (по умолчанию `NICHES_INPUT`).
 - `GOOGLE_SA_KEY_FILE` / `GOOGLE_SA_KEY_JSON` — ключ сервисного аккаунта Google с доступом на чтение/редактирование таблицы.
+- `SHEET_SYNC_ENABLED` — включает автоматическую синхронизацию (true/false).
+- `SHEET_SYNC_INTERVAL_MINUTES` — период автосинхронизации (мин., по умолчанию 60).
+- `SHEET_SYNC_BATCH_TAG` — опциональный фильтр по партии.
 
 ## Синхронизация запросов из Google Sheets
 
@@ -72,6 +75,8 @@ docker compose run --rm app --mode once
    ```
 
    Скрипт создаст записи в `serp_queries` и обновит служебные колонки листа (`status`, `generated_count` и т.д.).
+
+3. При установке `SHEET_SYNC_ENABLED=true` оркестратор автоматически вызывает синхронизацию каждые `SHEET_SYNC_INTERVAL_MINUTES` минут, используя тот же CLI-процесс под капотом.
 
 ## Миграции БД
 

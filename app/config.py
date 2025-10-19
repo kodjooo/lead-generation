@@ -47,6 +47,15 @@ class GoogleSheetsSettings:
 
 
 @dataclass(frozen=True)
+class SheetSyncSettings:
+    """Параметры автоматической синхронизации Google Sheets."""
+
+    enabled: bool
+    interval_minutes: int
+    batch_tag: str | None
+
+
+@dataclass(frozen=True)
 class Settings:
     """Глобальные настройки приложения."""
 
@@ -60,6 +69,7 @@ class Settings:
     database: DatabaseSettings
     smtp: SMTPSettings
     google_sheets: GoogleSheetsSettings
+    sheet_sync: SheetSyncSettings
 
 
 def _env(key: str, default: str = "") -> str:
@@ -93,6 +103,12 @@ def get_settings() -> Settings:
         service_account_key_json=_env("GOOGLE_SA_KEY_JSON") or None,
     )
 
+    sheet_sync = SheetSyncSettings(
+        enabled=_env("SHEET_SYNC_ENABLED", "false").lower() in {"1", "true", "yes"},
+        interval_minutes=int(_env("SHEET_SYNC_INTERVAL_MINUTES", "60")),
+        batch_tag=_env("SHEET_SYNC_BATCH_TAG") or None,
+    )
+
     return Settings(
         timezone=_env("APP_TIMEZONE", "Europe/Moscow"),
         yandex_folder_id=_env("YANDEX_CLOUD_FOLDER_ID"),
@@ -104,4 +120,5 @@ def get_settings() -> Settings:
         database=db,
         smtp=smtp,
         google_sheets=google_sheets,
+        sheet_sync=sheet_sync,
     )

@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import text
@@ -26,6 +26,7 @@ from app.modules.utils.iam import (
     load_service_account_key_from_string,
 )
 from app.modules.yandex_deferred import DeferredQueryParams, OperationResponse, YandexDeferredClient
+from app.modules.sheet_sync import build_service as build_sheet_sync_service
 
 LOGGER = logging.getLogger("app.orchestrator")
 
@@ -142,6 +143,21 @@ class PipelineOrchestrator:
             call_to_action="Готовы обсудить 15-минутный пилот на этой неделе?",
         )
         self._token_provider = token_provider
+        self.sheet_settings = settings.sheet_sync
+        self._sheet_service = None
+        self._sheet_sync_interval = timedelta(minutes=max(1, self.sheet_settings.interval_minutes))
+        self._last_sheet_sync: datetime | None = None
+        if self.sheet_settings.enabled:
+            try:
+                self._sheet_service = build_sheet_sync_service(settings)
+                LOGGER.info(
+                    "Автосинхронизация Google Sheets включена (каждые %s мин, batch_tag=%s)",
+                    self.sheet_settings.interval_minutes,
+                    self.sheet_settings.batch_tag,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.error("Не удалось инициализировать синхронизацию Google Sheets: %s", exc)
+                self._sheet_service = None
 
     @staticmethod
     def _build_iam_provider(settings) -> StaticTokenProvider | IamTokenProvider:
@@ -162,6 +178,7 @@ class PipelineOrchestrator:
         )
 
     def run_once(self) -> None:
+        self._maybe_sync_sheet()
         LOGGER.info("Выполнение цикла оркестрации.")
         scheduled = self._schedule_deferred_queries()
         processed = self._poll_operations()
@@ -198,6 +215,26 @@ class PipelineOrchestrator:
     def generate_and_send_emails(self) -> int:
         """Генерация и отправка писем."""
         return self._generate_and_send_emails()
+
+    def _maybe_sync_sheet(self) -> None:
+        if not self._sheet_service:
+            return
+        now = datetime.now(timezone.utc)
+        if self._last_sheet_sync and now - self._last_sheet_sync < self._sheet_sync_interval:
+            return
+        try:
+            summary = self._sheet_service.sync(batch_tag=self.sheet_settings.batch_tag)
+            LOGGER.info(
+                "Синхронизация Google Sheets: обработано=%s, добавлено=%s, дубликатов=%s, ошибок=%s",
+                summary.processed_rows,
+                summary.inserted_queries,
+                summary.duplicate_queries,
+                summary.errors,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("Ошибка синхронизации Google Sheets: %s", exc)
+        finally:
+            self._last_sheet_sync = now
 
     def _schedule_deferred_queries(self) -> int:
         with session_scope(self.session_factory) as session:
