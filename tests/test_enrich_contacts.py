@@ -22,8 +22,10 @@ class DummySession:
     def execute(self, statement, params):  # noqa: ANN001
         sql = statement.text if hasattr(statement, "text") else str(statement)
         self.calls.append((sql, params))
-        self.counter += 1
-        return DummyResult(f"contact-{self.counter}")
+        if "INSERT INTO contacts" in sql:
+            self.counter += 1
+            return DummyResult(f"contact-{self.counter}")
+        return DummyResult("noop")
 
     def commit(self) -> None:
         pass
@@ -69,18 +71,34 @@ def test_enrich_company_persists_contacts() -> None:
             text="""
             <html>
               <body>
-                <a href=\"mailto:hello@site.com\">Напишите нам</a>
-                <p>Телефон: +1 202 555 0199</p>
+                <h1>Digital агентство</h1>
+                <a href=\"mailto:HELLO@site.com\">Напишите нам</a>
+                <a href=\"tel:+7 (900) 123-45-67\">Позвонить</a>
+                <p>Резервный e-mail: Sales@site.com</p>
+                <p>Телефон офиса: 8 800 555 35 35</p>
+                <p>Иностранный номер: +1 202 555 0199</p>
               </body>
             </html>
             """,
         )
     )
 
-    inserted = enricher.enrich_company("company-1", "https://site.com", session=session)
+    inserted = enricher.enrich_company("company-1", "site.com", session=session)
 
-    assert inserted == ["contact-1", "contact-2"]
-    assert len(session.calls) == 2
-    first_call_sql, first_params = session.calls[0]
-    assert "INSERT INTO contacts" in first_call_sql
-    assert first_params["value"].lower() == "hello@site.com"
+    assert inserted == ["contact-1", "contact-2", "contact-3", "contact-4"]
+    # первый вызов — обновление companies с homepage_excerpt
+    assert "UPDATE companies" in session.calls[0][0]
+    insert_calls = [call for call in session.calls if "INSERT INTO contacts" in call[0]]
+    assert len(insert_calls) == 4
+    first_insert = insert_calls[0][1]
+    assert first_insert["value"] == "hello@site.com"
+    assert first_insert["is_primary"] is True
+    second_insert = insert_calls[1][1]
+    assert second_insert["value"] == "+79001234567"
+    assert second_insert["is_primary"] is True
+    third_insert = insert_calls[2][1]
+    assert third_insert["value"] == "sales@site.com"
+    assert third_insert["is_primary"] is False
+    fourth_insert = insert_calls[3][1]
+    assert fourth_insert["value"] == "88005553535"
+    assert fourth_insert["is_primary"] is False

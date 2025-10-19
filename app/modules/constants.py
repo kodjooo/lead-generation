@@ -22,3 +22,5 @@ EXCLUDED_DOMAINS = {
     "reddit.com",
     "pikabu.ru",
 }
+
+HOMEPAGE_EXCERPT_LIMIT = 40000

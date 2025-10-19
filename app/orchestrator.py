@@ -84,11 +84,11 @@ WHERE id = :operation_id;
 """
 
 SELECT_COMPANIES_WITHOUT_CONTACTS_SQL = """
-SELECT c.id, COALESCE(c.website_url, 'https://' || c.canonical_domain) AS website_url
+SELECT c.id, c.canonical_domain
 FROM companies c
 LEFT JOIN contacts ct ON ct.company_id = c.id
 WHERE ct.id IS NULL
-  AND COALESCE(c.website_url, c.canonical_domain) IS NOT NULL
+  AND c.canonical_domain IS NOT NULL
 ORDER BY c.created_at
 LIMIT :limit;
 """
@@ -362,9 +362,13 @@ class PipelineOrchestrator:
             )
             count = 0
             for row in rows:
+                canonical_domain = (row["canonical_domain"] or "").strip()
+                if not canonical_domain:
+                    LOGGER.debug("У компании %s отсутствует canonical_domain, пропускаем обогащение.", row["id"])
+                    continue
                 inserted = self.contact_enricher.enrich_company(
                     company_id=str(row["id"]),
-                    website_url=row["website_url"],
+                    canonical_domain=canonical_domain,
                     session=session,
                 )
                 if inserted:
