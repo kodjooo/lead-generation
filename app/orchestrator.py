@@ -131,6 +131,7 @@ class PipelineOrchestrator:
             token_provider=token_provider.get_token,
             folder_id=settings.yandex_folder_id,
             timezone=settings.timezone,
+            enforce_night_window=settings.yandex_enforce_night_window,
         )
         self.serp_ingest = SerpIngestService(self.session_factory)
         self.deduplicator = DeduplicationService(self.session_factory)

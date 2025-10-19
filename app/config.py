@@ -64,6 +64,7 @@ class Settings:
     yandex_iam_token: str | None
     yandex_sa_key_path: str | None
     yandex_sa_key_json: str | None
+    yandex_enforce_night_window: bool
     openai_api_key: str
     redis_url: str
     database: DatabaseSettings
@@ -75,6 +76,13 @@ class Settings:
 def _env(key: str, default: str = "") -> str:
     """Возвращает значение переменной окружения или значение по умолчанию."""
     return os.getenv(key, default).strip()
+
+
+def _env_bool(key: str, default: bool = False) -> bool:
+    value = os.getenv(key)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @lru_cache(maxsize=1)
@@ -115,6 +123,7 @@ def get_settings() -> Settings:
         yandex_iam_token=_env("YANDEX_CLOUD_IAM_TOKEN") or None,
         yandex_sa_key_path=_env("YANDEX_CLOUD_SA_KEY_FILE") or None,
         yandex_sa_key_json=_env("YANDEX_CLOUD_SA_KEY_JSON") or None,
+        yandex_enforce_night_window=_env_bool("YANDEX_ENFORCE_NIGHT_WINDOW", True),
         openai_api_key=_env("OPENAI_API_KEY"),
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,

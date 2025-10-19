@@ -53,6 +53,7 @@ docker compose run --rm app --mode once
   ```
 
   Ключ храните в Secret Manager или CI и не коммитьте в репозиторий.
+- `YANDEX_ENFORCE_NIGHT_WINDOW` — если `true`, отправка запросов выполняется только в ночное окно; установите `false` для дневных тестов.
 
 ### Google Sheets
 
