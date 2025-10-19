@@ -11,17 +11,13 @@ def test_query_generator_builds_queries_with_triggers() -> None:
 
     queries = generator.generate(row)
 
-    assert len(queries) == 6
+    assert len(queries) == 1
 
     first_query = queries[0]
     assert first_query.metadata["trigger"] is None
-    assert first_query.query_text.startswith("lang:ru стоматология Москва")
+    assert first_query.query_text == "стоматология Москва"
     assert first_query.region_code == 213
     assert first_query.scheduled_for == datetime(2025, 1, 1, 21, 0, tzinfo=timezone.utc)
-
-    second_query = queries[1]
-    assert '"оставить заявку"' in second_query.query_text
-    assert second_query.metadata["trigger"] == '"оставить заявку"'
 
 
 def test_query_generator_fallback_region() -> None:

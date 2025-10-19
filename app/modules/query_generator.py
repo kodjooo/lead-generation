@@ -6,41 +6,17 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import Iterable, List, Optional
+from typing import List, Optional
+
+from app.modules.constants import EXCLUDED_DOMAINS
 
 DEFAULT_CONFIG = {
     "language": "ru",
     "night_window": {"start_local": "00:00", "end_local": "07:59", "timezone": "Europe/Moscow"},
     "spacing_seconds": 45,
     "region_fallback_lr": 225,
-    "max_queries_per_niche": 6,
-    "triggers": [
-        '"оставить заявку"',
-        '"онлайн запись"',
-        '"рассчитать стоимость"',
-        '"коммерческое предложение"',
-        '"бриф"',
-    ],
-    "neg_sites": [
-        "domain:avito.ru",
-        "yandex.ru",
-        "2gis.ru",
-        "hh.ru",
-        "flamp.ru",
-        "otzovik.com",
-        "irecommend.ru",
-        "youtube.com",
-        "profi.ru",
-        "yell.ru",
-        "workspace.ru",
-        "vuzopedia.ru",
-        "orgpage.ru",
-        "rating-gamedev.ru",
-        "ru.wadline.com",
-        "vk.com",
-        "reddit.com",
-        "pikabu.ru",
-    ],
+    "max_queries_per_niche": 1,
+    "excluded_domains": sorted(EXCLUDED_DOMAINS),
     "regions_lr": {
         "россия": 225,
         "москва и московская область": 1,
@@ -192,14 +168,12 @@ class QueryGenerator:
         self.config = config or DEFAULT_CONFIG
         self._now_func = now_func
         self._spacing = int(self.config.get("spacing_seconds", 45))
-        self._max_queries = int(self.config.get("max_queries_per_niche", 6))
+        self._max_queries = int(self.config.get("max_queries_per_niche", 1))
         self._language = self.config.get("language", "ru")
         night_cfg = self.config.get("night_window", {})
         self._night_tz = ZoneInfo(night_cfg.get("timezone", "UTC"))
         self._window_start_local = self._parse_time(night_cfg.get("start_local", "00:00"))
         self._window_end_local = self._parse_time(night_cfg.get("end_local", "07:59"))
-        self._neg_sites = list(self.config.get("neg_sites", []))
-        self._triggers = list(self.config.get("triggers", []))
         self._regions_map = {
             self._normalize_key(k): v for k, v in self.config.get("regions_lr", {}).items()
         }
@@ -223,22 +197,6 @@ class QueryGenerator:
             return self._regions_map[country_key]
         return self._region_fallback
 
-    def _negatives(self) -> str:
-        tokens: List[str] = []
-        for entry in self._neg_sites:
-            raw = entry.strip()
-            if not raw:
-                continue
-            if ":" in raw:
-                prefix, value = raw.split(":", 1)
-                prefix = prefix.strip().lower()
-                value = value.strip()
-                if prefix in {"site", "domain", "host"} and value:
-                    tokens.append(f"-{prefix}:{value}")
-                    continue
-            tokens.append(f"-site:{raw}")
-        return " ".join(tokens)
-
     def _place_fragment(self, row: NicheRow) -> str:
         if row.city:
             return row.city.strip()
@@ -247,24 +205,14 @@ class QueryGenerator:
         return ""
 
     def _build_queries_texts(self, row: NicheRow) -> List[tuple[str, Optional[str]]]:
-        base_tokens = [f"lang:{self._language}", row.niche.strip()]
+        base_tokens = [row.niche.strip()]
         place = self._place_fragment(row)
         if place:
             base_tokens.append(place)
-        negatives = self._negatives()
 
         queries: List[tuple[str, Optional[str]]] = []
-        base_query = " ".join(base_tokens) + (f" {negatives}" if negatives else "")
+        base_query = " ".join(base_tokens)
         queries.append((base_query, None))
-
-        available_triggers = self._triggers[: max(0, self._max_queries - 1)]
-        for trigger in available_triggers:
-            tokens = list(base_tokens)
-            tokens.append(trigger)
-            query = " ".join(tokens) + (f" {negatives}" if negatives else "")
-            queries.append((query, trigger))
-            if len(queries) >= self._max_queries:
-                break
         return queries
 
     def _window_bounds(self, reference_date) -> tuple[datetime, timedelta]:

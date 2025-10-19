@@ -127,7 +127,7 @@
 - Сниппеты очищаются от лишних пробелов, URL приводятся к https-схеме и без фрагментов.
 
 ### Сохранение в БД
-- `SerpIngestService` сохраняет результаты в `serp_results` (upsert по `(operation_id, url)`), язык и метаданные (`{"source": "yandex", "language": "...", "yandex_operation_id": "spr..."}`).
+- `SerpIngestService` сохраняет результаты в `serp_results` (upsert по `(operation_id, url)`), язык и метаданные (`{"source": "yandex", "language": "...", "yandex_operation_id": "spr..."}`) и отбрасывает документы, если их домен входит в список исключений (`app/modules/constants.py`).
 - Для каждой записи создаётся/обновляется компания в `companies` по `dedupe_hash` (на основе домена), обновляется `website_url` и атрибуты.
 - Все операции выполняются в транзакциях через `session_scope`; при конфликте данные обновляются.
 
@@ -228,9 +228,9 @@
 ## Этап 13. Генерация запросов и постановка в очередь
 
 ### Алгоритм генерации
-- Модуль `app/modules/query_generator.py` реализует `QueryGenerator`, который строит до 6 поисковых запросов на нишу: базовый (`lang:ru + niche + place + отрицательные домены`) и набор триггеров из `DEFAULT_CONFIG`.
+- Модуль `app/modules/query_generator.py` реализует `QueryGenerator`, который формирует один поисковый запрос на нишу (`<niche> [<город|страна>]`) без дополнительных триггеров и минус-операторов в тексте запроса.
 - Планировщик распределяет `scheduled_for` внутри ближайшего ночного окна (20:00–05:59 UTC) с шагом 45 секунд; регион определяется по справочнику (город → страна → fallback 225).
-- Метаданные (`niche`, `city`, `country`, `trigger`, `batch_tag`, `language`, `selection`) записываются в JSON и хранятся в `serp_queries.metadata`.
+- Метаданные (`niche`, `city`, `country`, `trigger`, `batch_tag`, `language`, `selection`) записываются в JSON и хранятся в `serp_queries.metadata` (поле `trigger` остаётся `null`).
 
 ### Очередь и логирование
 - `QueryRepository` сохраняет запросы в `serp_queries` (ON CONFLICT по `query_hash`) и ведёт журнал партий в таблице `search_batch_logs`.

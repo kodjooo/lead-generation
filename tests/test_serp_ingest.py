@@ -38,6 +38,23 @@ SAMPLE_XML = """
 </response>
 """.encode("utf-8")
 
+EXCLUDED_XML = """
+<response>
+  <grouping>
+    <group>
+      <doc>
+        <url>https://support.avito.ru/help</url>
+        <domain>support.avito.ru</domain>
+        <title>Avito Support</title>
+        <passages>
+          <passage>Свяжитесь с нами</passage>
+        </passages>
+      </doc>
+    </group>
+  </grouping>
+</response>
+""".encode("utf-8")
+
 
 def test_parse_serp_xml_extracts_documents() -> None:
     documents = parse_serp_xml(SAMPLE_XML)
@@ -127,3 +144,30 @@ def test_serp_ingest_persists_results_and_companies() -> None:
     params_company = session.calls[1][1]
     assert params_company["domain"] == "example.com"
     assert params_company["website_url"].startswith("https://example.com")
+
+
+def test_serp_ingest_skips_excluded_domains() -> None:
+    session = DummySession()
+
+    @contextmanager
+    def fake_scope(_factory):  # type: ignore[override]
+        try:
+            yield session
+            session.commit()
+        finally:
+            session.close()
+
+    service = SerpIngestService(session_factory=lambda: session)
+
+    with patch(
+        "app.modules.serp_ingest.session_scope",
+        side_effect=lambda factory: fake_scope(factory),
+    ):
+        inserted = service.ingest(
+            "11111111-1111-1111-1111-111111111111",
+            EXCLUDED_XML,
+            yandex_operation_id="op-456",
+        )
+
+    assert inserted == []
+    assert session.calls == []

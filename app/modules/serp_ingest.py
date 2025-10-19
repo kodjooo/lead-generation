@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.modules.constants import EXCLUDED_DOMAINS
 from app.modules.utils.db import get_session_factory, session_scope
 from app.modules.utils.normalize import (
     build_company_dedupe_key,
@@ -20,6 +21,16 @@ from app.modules.utils.normalize import (
 )
 
 LOGGER = logging.getLogger("app.serp_ingest")
+
+EXCLUDED_DOMAIN_SUFFIXES = tuple(sorted(EXCLUDED_DOMAINS))
+
+
+def _is_excluded_domain(domain: str) -> bool:
+    domain_lower = (domain or "").lower()
+    return any(
+        domain_lower == excluded or domain_lower.endswith(f".{excluded}")
+        for excluded in EXCLUDED_DOMAIN_SUFFIXES
+    )
 
 
 class SerpParseError(RuntimeError):
@@ -152,6 +163,13 @@ class SerpIngestService:
         inserted: List[str] = []
         with session_scope(self.session_factory) as session:
             for document in documents:
+                if _is_excluded_domain(document.domain):
+                    LOGGER.debug(
+                        "Документ %s пропущен из-за исключённого домена %s",
+                        document.url,
+                        document.domain,
+                    )
+                    continue
                 result_id = self._upsert_result(
                     session,
                     operation_db_id,
@@ -194,6 +212,8 @@ class SerpIngestService:
         return str(result.scalar_one())
 
     def _ensure_company(self, session: Session, document: SerpDocument) -> None:
+        if _is_excluded_domain(document.domain):
+            return
         dedupe_hash = build_company_dedupe_key(document.title, document.domain)
         attributes = json.dumps({
             "source": "yandex_serp",
