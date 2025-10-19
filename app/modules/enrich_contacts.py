@@ -42,7 +42,7 @@ class ContactRecord:
 
 INSERT_CONTACT_SQL = """
 INSERT INTO contacts (company_id, contact_type, value, source_url, is_primary, quality_score, metadata)
-VALUES (:company_id, :contact_type, :value, :source_url, :is_primary, :quality_score, :metadata::jsonb)
+VALUES (:company_id, :contact_type, :value, :source_url, :is_primary, :quality_score, CAST(:metadata AS JSONB))
 ON CONFLICT ON CONSTRAINT uidx_contacts_value_type
 DO UPDATE SET
     company_id = EXCLUDED.company_id,
@@ -120,13 +120,14 @@ class ContactEnricher:
                 is_primary = True
                 primary_assigned.add("phone")
 
+            cleaned_value = re.sub(r"\s+", " ", record.value).replace("\u00a0", " ").strip()
             metadata = json.dumps({"label": record.label, "source_type": record.contact_type})
             result = session.execute(
                 text(INSERT_CONTACT_SQL),
                 {
                     "company_id": company_id,
                     "contact_type": record.contact_type,
-                    "value": record.value,
+                    "value": cleaned_value,
                     "source_url": record.source_url,
                     "is_primary": is_primary,
                     "quality_score": record.quality_score,
