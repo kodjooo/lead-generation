@@ -38,6 +38,15 @@ docker compose up --build
 - `db` — PostgreSQL 16 (storage для пайплайна).
 - `redis` — брокер задач/кэш.
 
+> Redis по умолчанию доступен только внутри сети docker compose. Это позволяет запускать стек на серверах, где уже установлен системный Redis (нет конфликта портов на 6379). Если нужен доступ с хоста, создайте `docker-compose.override.yml` и добавьте в нём `ports` для сервиса `redis`, например:
+
+```yaml
+services:
+  redis:
+    ports:
+      - "6379:6379"
+```
+
 ## Как работает пайплайн
 
 1. **Подготовка данных.** Ниши, города и страны заносятся в таблицу Google Sheets (`NICHES_INPUT`). Сервис `SheetSyncService` (CLI `python -m app.tools.sync_sheet` или автосинхронизация) превращает каждую строку в набор поисковых запросов через `QueryGenerator`: выбирается регион (`lr`), рассчитывается ночное окно и время запуска, формируется `serp_queries` с метаданными и хэшами для идемпотентности. Итоги синхронизации фиксируются в листе и таблице `search_batch_logs`.
@@ -130,23 +139,33 @@ docker compose up --build
 3. **Заполните `.env`:** пропишите ключи Yandex и Google, параметры SMTP (пароль приложения берите в кавычках), установите `EMAIL_SENDING_ENABLED=true`.
 4. **Примените миграции:**
    ```bash
-   docker compose up -d db
-   docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
+   docker-compose up -d db
+   docker-compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
    ```
+
+   Если вызываете команду прямо в терминале сервера и переменные окружения недоступны, подставьте значения явно (по умолчанию `leadgen`):
+
+   ```bash
+   for f in migrations/000*.sql; do
+   docker compose exec -T db psql -U leadgen -d leadgen < "$f"
+   done
+   ```
+   
 5. **Запустите сервисы:**
    ```bash
-   docker compose up -d --build
+   docker-compose up -d --build
    ```
+   Хостовой Redis останавливать не нужно: контейнерный Redis работает только внутри сети compose и не занимает порт `6379` на сервере.
 6. **Обновление:**
    ```bash
    git pull
-   docker compose up -d --build
+   docker-compose up -d --build
    ```
    Если есть новые миграции — повторите шаг 4.
 7. **Мониторинг:**
    ```bash
-   docker compose logs -f app
-   docker compose logs -f worker
+   docker-compose logs -f app
+   docker-compose logs -f worker
    ```
 
 ### Управление оркестратором
@@ -210,6 +229,14 @@ docker compose run --rm app --mode once
 
 ```bash
 docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
+```
+
+Если вызываете команду прямо в терминале сервера и переменные окружения недоступны, подставьте значения явно (по умолчанию `leadgen`):
+
+```bash
+for f in migrations/000*.sql; do
+  docker compose exec -T db psql -U leadgen -d leadgen < "$f"
+done
 ```
 
 ## Развёртывание на удалённом сервере
