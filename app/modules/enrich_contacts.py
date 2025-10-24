@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional
 from urllib.parse import urljoin
 
 import httpx
@@ -20,26 +19,9 @@ from app.modules.utils.normalize import normalize_url
 
 LOGGER = logging.getLogger("app.enrich_contacts")
 
-EMAIL_REGEX = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
-PHONE_REGEX = re.compile(r"\+?\d[\d\s().-]{7,}")
-PHONE_ALLOWED_REGEX = re.compile(r"^(?:\+7\d{10}|8\d{10})$")
-
 
 def _normalize_email(value: str) -> str:
     return (value or "").strip().lower()
-
-
-def _normalize_phone(value: str) -> str:
-    cleaned = re.sub(r"[^\d+]", "", value or "")
-    if cleaned.startswith("+") and not cleaned.startswith("+7"):
-        cleaned = cleaned.lstrip("+")
-    if cleaned.startswith("7") and not cleaned.startswith("+7"):
-        cleaned = "+" + cleaned
-    return cleaned
-
-
-def _is_allowed_phone(value: str) -> bool:
-    return bool(PHONE_ALLOWED_REGEX.match(value))
 
 
 @dataclass
@@ -56,8 +38,7 @@ class ContactRecord:
     def normalized_key(self) -> str:
         if self.contact_type == "email":
             return f"email:{_normalize_email(self.value)}"
-        normalized_phone = _normalize_phone(self.value)
-        return f"phone:{normalized_phone}"
+        return f"other:{self.value}"
 
 
 INSERT_CONTACT_SQL = """
@@ -119,7 +100,7 @@ class ContactEnricher:
             return []
 
         candidates = self._build_candidate_urls(base_url)
-        collected: Dict[str, ContactRecord] = {}
+        collected_email: Optional[ContactRecord] = None
         homepage_excerpt_saved = False
 
         for candidate_url in candidates:
@@ -129,45 +110,28 @@ class ContactEnricher:
             if not homepage_excerpt_saved and self._is_homepage(candidate_url, base_url):
                 self._save_homepage_excerpt(session, company_id, html)
                 homepage_excerpt_saved = True
-            for contact in self._extract_contacts_from_html(html, candidate_url):
-                if contact.contact_type == "phone":
-                    normalized_phone = _normalize_phone(contact.value)
-                    if not _is_allowed_phone(normalized_phone):
-                        continue
-                collected[contact.normalized_key()] = contact
-            if collected:
-                break  # Контакты найдены, можно остановиться.
+            if collected_email is None:
+                for contact in self._extract_contacts_from_html(html, candidate_url):
+                    if contact.contact_type == "email":
+                        collected_email = contact
+                        break
+            if collected_email:
+                break  # найден первый email, выходим
 
         if not homepage_excerpt_saved:
             html = self._fetch_html(base_url)
             if html:
                 self._save_homepage_excerpt(session, company_id, html)
 
-        if not collected:
+        if not collected_email:
+            self._mark_company_status(session, company_id, "contacts_not_found")
             LOGGER.info("Контакты для компании %s не найдены.", company_id)
             return []
 
         inserted_ids: List[str] = []
-        primary_assigned: Set[str] = set()
-        for record in collected.values():
-            is_primary = False
-            if record.origin in {"mailto", "tel"}:
-                if record.contact_type == "email" and "email" not in primary_assigned:
-                    is_primary = True
-                    primary_assigned.add("email")
-                elif record.contact_type == "phone" and "phone" not in primary_assigned:
-                    is_primary = True
-                    primary_assigned.add("phone")
-
-            if record.contact_type == "email":
-                cleaned_value = _normalize_email(record.value)
-                if not cleaned_value:
-                    continue
-            else:
-                cleaned_value = _normalize_phone(record.value)
-                if not _is_allowed_phone(cleaned_value):
-                    continue
-
+        record = collected_email
+        cleaned_value = _normalize_email(record.value)
+        if cleaned_value:
             metadata = json.dumps({"label": record.label, "source_type": record.contact_type})
             result = session.execute(
                 text(INSERT_CONTACT_SQL),
@@ -176,12 +140,15 @@ class ContactEnricher:
                     "contact_type": record.contact_type,
                     "value": cleaned_value,
                     "source_url": record.source_url,
-                    "is_primary": is_primary,
+                    "is_primary": True,
                     "quality_score": record.quality_score,
                     "metadata": metadata,
                 },
             )
             inserted_ids.append(str(result.scalar_one()))
+
+        if inserted_ids:
+            self._mark_company_status(session, company_id, "contacts_ready")
 
         return inserted_ids
 
@@ -209,7 +176,7 @@ class ContactEnricher:
 
     def _extract_contacts_from_html(self, html: str, source_url: str) -> Iterable[ContactRecord]:
         soup = BeautifulSoup(html, "html.parser")
-        found: Dict[str, ContactRecord] = {}
+        found_email: Optional[ContactRecord] = None
 
         # mailto/tel ссылки
         for anchor in soup.find_all("a"):
@@ -218,28 +185,20 @@ class ContactEnricher:
             if href.lower().startswith("mailto:"):
                 email = href.split(":", 1)[1].split("?", 1)[0]
                 record = ContactRecord("email", email, source_url, 1.0, origin="mailto", label=text or "mailto")
-                found[record.normalized_key()] = record
-            elif href.lower().startswith("tel:"):
-                phone = href.split(":", 1)[1].split("?", 1)[0]
-                normalized = _normalize_phone(phone)
-                if _is_allowed_phone(normalized):
-                    record = ContactRecord("phone", phone, source_url, 0.9, origin="tel", label=text or "tel")
-                    found[record.normalized_key()] = record
+                found_email = record
+                break
 
-        text_blob = soup.get_text(" ", strip=True)
-        for match in EMAIL_REGEX.finditer(text_blob):
-            email = match.group(0)
-            record = ContactRecord("email", email, source_url, 0.8, origin="text", label="text")
-            found.setdefault(record.normalized_key(), record)
+        if found_email:
+            return [found_email]
 
-        for match in PHONE_REGEX.finditer(text_blob):
-            phone = match.group(0)
-            normalized = _normalize_phone(phone)
-            if _is_allowed_phone(normalized):
-                record = ContactRecord("phone", phone, source_url, 0.6, origin="text", label="text")
-                found.setdefault(record.normalized_key(), record)
+        return []
 
-        return list(found.values())
+    @staticmethod
+    def _mark_company_status(session: Session, company_id: str, status: str) -> None:
+        session.execute(
+            text("UPDATE companies SET status = :status, updated_at = NOW() WHERE id = :id"),
+            {"status": status, "id": company_id},
+        )
 
     @staticmethod
     def _is_homepage(candidate_url: str, base_url: str) -> bool:

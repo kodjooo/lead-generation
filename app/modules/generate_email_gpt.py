@@ -31,6 +31,8 @@ class ContactBrief:
 
     name: Optional[str] = None
     role: Optional[str] = None
+    emails: List[str] = field(default_factory=list)
+    phones: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -48,6 +50,15 @@ class EmailTemplate:
 
     subject: str
     body: str
+
+
+@dataclass
+class GeneratedEmail:
+    """Результат генерации письма вместе с исходным запросом."""
+
+    template: EmailTemplate
+    request_payload: Optional[Dict[str, object]] = None
+    used_fallback: bool = False
 
 
 class EmailGenerator:
@@ -72,26 +83,35 @@ class EmailGenerator:
         company: CompanyBrief,
         offer: OfferBrief,
         contact: Optional[ContactBrief] = None,
-    ) -> EmailTemplate:
-        """Возвращает готовый шаблон письма."""
+    ) -> GeneratedEmail:
+        """Возвращает готовый шаблон и исходный запрос к LLM."""
+        payload: Optional[Dict[str, object]] = None
         if not self.settings.openai_api_key:
             LOGGER.warning("OPENAI_API_KEY не задан, используется fallback-шаблон.")
-            return self._fallback_template(company, offer, contact)
+            template = self._fallback_template(company, offer, contact)
+            return GeneratedEmail(template=template, request_payload=None, used_fallback=True)
 
         try:
-            response = self._request_openai(company, offer, contact)
-            return self._parse_openai_response(response) or self._fallback_template(company, offer, contact)
+            payload = self._build_payload(company, offer, contact)
+            response = self._request_openai(payload)
+            parsed = self._parse_openai_response(response)
+            if parsed:
+                return GeneratedEmail(template=parsed, request_payload=payload, used_fallback=False)
+            template = self._fallback_template(company, offer, contact)
+            return GeneratedEmail(template=template, request_payload=payload, used_fallback=True)
         except httpx.HTTPError as exc:  # noqa: PERF203
             LOGGER.error("Ошибка обращения к OpenAI: %s", exc)
-            return self._fallback_template(company, offer, contact)
+            template = self._fallback_template(company, offer, contact)
+            return GeneratedEmail(template=template, request_payload=payload, used_fallback=True)
 
-    def _request_openai(
+    def _build_payload(
         self,
         company: CompanyBrief,
         offer: OfferBrief,
         contact: Optional[ContactBrief],
     ) -> Dict[str, object]:
-        payload = {
+        homepage_excerpt = " ".join(company.highlights) if company.highlights else None
+        return {
             "model": self.model,
             "temperature": self.temperature,
             "response_format": {"type": "json_schema", "json_schema": self._response_schema()},
@@ -99,8 +119,19 @@ class EmailGenerator:
                 {
                     "role": "system",
                     "content": (
-                        "Ты ассистент по продажам. Пиши короткие B2B письма на русском языке. "
-                        "Формат ответа — JSON c полями subject и body."
+                        "Ты Марк Аборчи, специалист по AI-автоматизации. Твоя задача — писать "
+                        "персонализированные, человеческие письма на русском языке для компаний, "
+                        "которым можно помочь автоматизацией процессов с помощью нейросетей, Python, make.com или n8n. "
+                        "Избегай рекламного тона и превосходных степеней. Делай акцент на пользе: экономия времени, "
+                        "сокращение затрат, устранение рутины, повышение эффективности. Всегда используй JSON-ответ с полями subject и body. "
+                        "Структура письма фиксирована: тема передаёт идею оптимизации процессов компании (например, 'Идея по оптимизации процессов вашей компании') и тело состоит из блоков:\n"
+                        "1) Приветствие 'Добрый день!'.\n"
+                        "2) Короткое представление Марка и его подхода (нейросети, Python).\n"
+                        "3) Упоминание, чем занимается компания (используй предоставленный текст, не упоминай название). Добавь короткое наблюдение (1 предложение) о чём-то, что выделяет компанию: что тебя впечатлило, что показалось интересным.\n"
+                        "4) Описание конкретного процесса, который можно упростить с помощью AI, и ожидаемого эффекта (сократить задержки, уменьшить затраты и т.п.).\n"
+                        "5) Приглашение обсудить примеры.\n"
+                        "6) Завершение: 'С уважением,' + имя и должность.\n"
+                        "Структуру сохраняй, но формулировки темы и тела варьируй, чтобы письма не совпадали дословно."
                     ),
                 },
                 {
@@ -108,33 +139,26 @@ class EmailGenerator:
                     "content": json.dumps(
                         {
                             "company": {
-                                "name": company.name,
-                                "domain": company.domain,
-                                "industry": company.industry,
-                                "highlights": company.highlights,
+                                "homepage_excerpt": homepage_excerpt,
                             },
-                            "contact": {
-                                "name": contact.name if contact else None,
-                                "role": contact.role if contact else None,
+                            "guidelines": {
+                                "language": self.language,
+                                "avoid_marketing": True,
                             },
-                            "offer": {
-                                "pains": offer.pains,
-                                "value_proposition": offer.value_proposition,
-                                "call_to_action": offer.call_to_action,
-                            },
-                            "language": self.language,
-                        }
+                        },
+                        ensure_ascii=False,
                     ),
                 },
             ],
         }
 
+    def _request_openai(self, payload: Dict[str, object]) -> Dict[str, object]:
+        LOGGER.debug("Запрос к OpenAI: %s", payload)
+
         headers = {
             "Authorization": f"Bearer {self.settings.openai_api_key}",
             "Content-Type": "application/json",
         }
-
-        LOGGER.debug("Запрос к OpenAI: %s", payload)
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(OPENAI_CHAT_COMPLETIONS_URL, headers=headers, json=payload)
             response.raise_for_status()
@@ -161,19 +185,43 @@ class EmailGenerator:
         offer: OfferBrief,
         contact: Optional[ContactBrief],
     ) -> EmailTemplate:
-        contact_name = contact.name if contact and contact.name else "Коллеги"
-        pains = "\n- " + "\n- ".join(offer.pains) if offer.pains else ""
-        subject = f"Идеи по росту {company.name}" if company.name else "Предложение по сотрудничеству"
-        body = (
-            f"{contact_name}, здравствуйте!\n\n"
-            f"Меня зовут команда LeadGen. Мы изучили сайт {company.domain}"
-            f" и подготовили небольшие предложения по улучшению процессов."
-        )
-        if pains:
-            body += f"\n\nМы обратили внимание на задачи:{pains}"
+        subject = "Идея по оптимизации процессов вашей компании"
+        industry_fragment = company.industry or "вашей сфере"
         if offer.value_proposition:
-            body += f"\n\nЧто мы предлагаем: {offer.value_proposition}"
-        body += f"\n\n{offer.call_to_action}\n\nС уважением, команда LeadGen"
+            automation_example = offer.value_proposition.lower()
+            process_hint = (
+                f"например, {automation_example}, чтобы команда меньше тратила времени на рутину"
+            )
+        elif offer.pains:
+            pain_focus = offer.pains[0].lower()
+            process_hint = (
+                f"например, автоматизировать части процесса вокруг {pain_focus}, "
+                "чтобы команда меньше тратила времени на рутину"
+            )
+        else:
+            process_hint = (
+                "например, автоматизировать обработку заявок или подготовку отчётов, "
+                "чтобы команда меньше тратила времени на рутину"
+            )
+        observation = (
+            "Обратил внимание, как вы последовательно развиваете проекты — глаз зацепился за кейсы на главной."
+            if not offer.pains
+            else "Понравилось, что вы так системно подходите к своим задачам — это редко встретишь."
+        )
+        body_lines = [
+            "Добрый день!",
+            "Меня зовут Марк, я занимаюсь автоматизацией бизнес-процессов с помощью нейросетей и Python.",
+            f"Посмотрел ваш сайт — по описанию видно, что вы работаете в сфере {industry_fragment}.",
+            observation,
+            f"Мне кажется, здесь можно упростить процессы, {process_hint}.",
+            "",
+            "Если интересно, могу показать на конкретных примерах, как это работает.",
+            "",
+            "С уважением,",
+            "Марк Аборчи",
+            "AI-Automation Specialist",
+        ]
+        body = "\n".join(body_lines)
         return EmailTemplate(subject=subject, body=body)
 
     def _response_schema(self) -> Dict[str, object]:

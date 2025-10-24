@@ -53,11 +53,8 @@ def test_extract_contacts_from_html() -> None:
     contacts = list(enricher._extract_contacts_from_html(html, "https://example.com"))
 
     emails = [c for c in contacts if c.contact_type == "email"]
-    phones = [c for c in contacts if c.contact_type == "phone"]
-
-    assert len(emails) == 2
-    assert len(phones) == 2
-    assert {c.value.lower() for c in emails} == {"sales@example.com", "info@example.com"}
+    assert len(emails) == 1
+    assert emails[0].value.lower() == "sales@example.com"
 
 
 @respx.mock
@@ -85,20 +82,41 @@ def test_enrich_company_persists_contacts() -> None:
 
     inserted = enricher.enrich_company("company-1", "site.com", session=session)
 
-    assert inserted == ["contact-1", "contact-2", "contact-3", "contact-4"]
+    assert inserted == ["contact-1"]
     # первый вызов — обновление companies с homepage_excerpt
     assert "UPDATE companies" in session.calls[0][0]
     insert_calls = [call for call in session.calls if "INSERT INTO contacts" in call[0]]
-    assert len(insert_calls) == 4
+    assert len(insert_calls) == 1
     first_insert = insert_calls[0][1]
     assert first_insert["value"] == "hello@site.com"
     assert first_insert["is_primary"] is True
-    second_insert = insert_calls[1][1]
-    assert second_insert["value"] == "+79001234567"
-    assert second_insert["is_primary"] is True
-    third_insert = insert_calls[2][1]
-    assert third_insert["value"] == "sales@site.com"
-    assert third_insert["is_primary"] is False
-    fourth_insert = insert_calls[3][1]
-    assert fourth_insert["value"] == "88005553535"
-    assert fourth_insert["is_primary"] is False
+    status_calls = [call for call in session.calls if "SET status" in call[0]]
+    assert status_calls
+    assert status_calls[-1][1]["status"] == "contacts_ready"
+
+
+@respx.mock
+def test_enrich_company_marks_not_found() -> None:
+    session = DummySession()
+    enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    respx.get("https://empty.com/").mock(
+        return_value=httpx.Response(
+            200,
+            text="""
+            <html>
+              <body>
+                <h1>О компании</h1>
+                <p>Без явных контактных email.</p>
+              </body>
+            </html>
+            """,
+        )
+    )
+
+    inserted = enricher.enrich_company("company-2", "empty.com", session=session)
+
+    assert inserted == []
+    status_calls = [call for call in session.calls if "SET status" in call[0]]
+    assert status_calls
+    assert status_calls[-1][1]["status"] == "contacts_not_found"

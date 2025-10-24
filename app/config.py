@@ -66,6 +66,7 @@ class Settings:
     yandex_sa_key_json: str | None
     yandex_enforce_night_window: bool
     openai_api_key: str
+    email_sending_enabled: bool
     redis_url: str
     database: DatabaseSettings
     smtp: SMTPSettings
@@ -125,6 +126,7 @@ def get_settings() -> Settings:
         yandex_sa_key_json=_env("YANDEX_CLOUD_SA_KEY_JSON") or None,
         yandex_enforce_night_window=_env_bool("YANDEX_ENFORCE_NIGHT_WINDOW", True),
         openai_api_key=_env("OPENAI_API_KEY"),
+        email_sending_enabled=_env_bool("EMAIL_SENDING_ENABLED", True),
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,
         smtp=smtp,

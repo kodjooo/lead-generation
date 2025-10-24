@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.modules.deduplicate import DeduplicationService
 from app.modules.enrich_contacts import ContactEnricher
-from app.modules.generate_email_gpt import CompanyBrief, EmailGenerator, OfferBrief
+from app.modules.generate_email_gpt import CompanyBrief, ContactBrief, EmailGenerator, OfferBrief
 from app.modules.send_email import EmailSender
 from app.modules.serp_ingest import SerpIngestService
 from app.modules.utils.db import get_session_factory, session_scope
@@ -89,12 +89,20 @@ FROM companies c
 LEFT JOIN contacts ct ON ct.company_id = c.id
 WHERE ct.id IS NULL
   AND c.canonical_domain IS NOT NULL
+  AND c.status <> 'contacts_not_found'
 ORDER BY c.created_at
 LIMIT :limit;
 """
 
 SELECT_CONTACTS_FOR_OUTREACH_SQL = """
-SELECT ct.id AS contact_id, ct.company_id, ct.value, c.name, c.canonical_domain, c.industry
+SELECT
+    ct.id AS contact_id,
+    ct.company_id,
+    ct.value,
+    c.name,
+    c.canonical_domain,
+    c.industry,
+    c.attributes ->> 'homepage_excerpt' AS homepage_excerpt
 FROM contacts ct
 JOIN companies c ON c.id = ct.company_id
 LEFT JOIN outreach_messages om ON om.contact_id = ct.id AND om.status IN ('sent', 'scheduled')
@@ -102,6 +110,9 @@ LEFT JOIN opt_out_registry o ON LOWER(o.contact_value) = LOWER(ct.value)
 WHERE ct.contact_type = 'email'
   AND om.id IS NULL
   AND o.id IS NULL
+  AND c.name IS NOT NULL AND c.name <> ''
+  AND c.attributes ->> 'homepage_excerpt' IS NOT NULL
+  AND c.attributes ->> 'homepage_excerpt' <> ''
 ORDER BY ct.first_seen_at
 LIMIT :limit;
 """
@@ -110,6 +121,30 @@ SELECT_SERP_QUERY_DETAILS_SQL = """
 SELECT query_text, region_code
 FROM serp_queries
 WHERE id = :query_id;
+"""
+
+SELECT_SCHEDULED_OUTREACH_SQL = """
+WITH locked AS (
+    SELECT om.id
+    FROM outreach_messages om
+    WHERE om.status = 'scheduled'
+      AND (om.scheduled_for IS NULL OR om.scheduled_for <= NOW())
+    ORDER BY COALESCE(om.scheduled_for, om.created_at)
+    FOR UPDATE SKIP LOCKED
+    LIMIT :limit
+)
+SELECT
+    om.id,
+    om.company_id,
+    om.contact_id,
+    om.subject,
+    om.body,
+    om.metadata,
+    ct.value AS contact_value
+FROM outreach_messages om
+JOIN locked l ON l.id = om.id
+LEFT JOIN contacts ct ON ct.id = om.contact_id
+ORDER BY COALESCE(om.scheduled_for, om.created_at);
 """
 
 
@@ -189,12 +224,13 @@ class PipelineOrchestrator:
         if processed:
             self.deduplicator.run()
         enriched = self._enrich_missing_contacts()
-        sent = self._generate_and_send_emails()
+        queued, sent = self._generate_and_send_emails()
         LOGGER.info(
-            "Цикл завершён: scheduled=%s, processed=%s, enriched=%s, sent=%s",
+            "Цикл завершён: scheduled=%s, processed=%s, enriched=%s, queued=%s, sent=%s",
             scheduled,
             processed,
             enriched,
+            queued,
             sent,
         )
 
@@ -221,7 +257,8 @@ class PipelineOrchestrator:
 
     def generate_and_send_emails(self) -> int:
         """Генерация и отправка писем."""
-        return self._generate_and_send_emails()
+        _, sent = self._generate_and_send_emails()
+        return sent
 
     def _maybe_sync_sheet(self) -> None:
         if not self._sheet_service:
@@ -375,7 +412,12 @@ class PipelineOrchestrator:
                     count += 1
             return count
 
-    def _generate_and_send_emails(self) -> int:
+    def _generate_and_send_emails(self) -> tuple[int, int]:
+        queued = self._queue_emails()
+        sent = self._send_scheduled_emails()
+        return queued, sent
+
+    def _queue_emails(self) -> int:
         with session_scope(self.session_factory) as session:
             rows = list(
                 session.execute(
@@ -383,20 +425,77 @@ class PipelineOrchestrator:
                     {"limit": self.config.batch_size},
                 ).mappings()
             )
-            sent = 0
+            queued = 0
             for row in rows:
                 company = CompanyBrief(
                     name=row["name"],
                     domain=row["canonical_domain"] or row["value"].split("@")[-1],
                     industry=row["industry"],
+                    highlights=[row["homepage_excerpt"]] if row["homepage_excerpt"] else [],
                 )
-                template = self.email_generator.generate(company, self.offer)
-                self.email_sender.send(
+                contact = ContactBrief(emails=[row["value"]])
+                generated = self.email_generator.generate(company, self.offer, contact)
+                self.email_sender.queue(
                     company_id=row["company_id"],
                     contact_id=row["contact_id"],
                     to_email=row["value"],
-                    template=template,
+                    template=generated.template,
+                    request_payload=generated.request_payload,
                     session=session,
                 )
-                sent += 1
+                queued += 1
+            return queued
+
+    def _send_scheduled_emails(self) -> int:
+        if not getattr(self.email_sender, "sending_enabled", True):
+            LOGGER.debug("Отправка писем отключена, доставка пропущена.")
+            return 0
+        if not self.email_sender.is_within_send_window():
+            LOGGER.debug("Вне окна отправки, доставка писем пропущена.")
+            return 0
+
+        with session_scope(self.session_factory) as session:
+            rows = list(
+                session.execute(
+                    text(SELECT_SCHEDULED_OUTREACH_SQL),
+                    {"limit": self.config.batch_size},
+                ).mappings()
+            )
+            sent = 0
+            for row in rows:
+                metadata = row.get("metadata") or {}
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except json.JSONDecodeError:
+                        metadata = {}
+                to_email = None
+                if isinstance(metadata, dict):
+                    to_email = metadata.get("to_email")
+                if not to_email:
+                    to_email = row.get("contact_value")
+                if not to_email:
+                    LOGGER.error(
+                        "Не удалось определить email для outreach %s, помечаем как failed.",
+                        row["id"],
+                    )
+                    self.email_sender.mark_status(
+                        outreach_id=str(row["id"]),
+                        status="failed",
+                        last_error="missing_email",
+                        metadata={"reason": "missing_email"},
+                        session=session,
+                    )
+                    continue
+                result = self.email_sender.deliver(
+                    outreach_id=str(row["id"]),
+                    company_id=str(row["company_id"]),
+                    contact_id=row.get("contact_id"),
+                    to_email=to_email,
+                    subject=row["subject"],
+                    body=row["body"],
+                    session=session,
+                )
+                if result == "sent":
+                    sent += 1
             return sent

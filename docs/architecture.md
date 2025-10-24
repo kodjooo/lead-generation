@@ -163,8 +163,8 @@
 - Email приводятся к нижнему регистру, телефоны очищаются до допустимого формата и сохраняются в `contacts` с upsert по `(contact_type, value)`.
 
 ### Сохранение и приоритезация
-- `is_primary=True` присваивается только контактам из `mailto:` и `tel:` (по одному email и телефону на компанию); текстовые совпадения всегда `False`.
-- Качество контакта определяется источником: `mailto` → 1.0, `tel` → 0.9, текстовые находки → 0.8/0.6.
+- `is_primary=True` присваивается единственному email, найденному по `mailto:`; остальные контакты не сохраняются. Таким образом, каждый сайт даёт не более одного контактного адреса.
+- Качество контакта фиксировано: `mailto` → 1.0.
 - При конфликте обновляются `quality_score`, `last_seen_at`, атрибуты объединяются через `jsonb` merge.
 
 ### Тесты
@@ -174,13 +174,14 @@
 
 ### Генерация
 - `app/modules/generate_email_gpt.py` формирует контекст по компании и предложению, обращается к OpenAI Chat Completions (JSON schema), есть fallback-шаблон.
-- Поддерживаются `CompanyBrief`, `OfferBrief`, `ContactBrief`; ответы приводятся к `EmailTemplate`.
+- LLM получает только название компании и текстовый фрагмент с главной страницы (`homepage_excerpt`), строит письмо от лица Марка Аборчи и возвращает JSON c `subject`/`body` согласно фиксированной структуре.
 - При ошибках API или отсутствии ключа используется deterministic fallback.
 
 ### Отправка
-- `app/modules/send_email.py` отправляет письма через SMTP (`starttls`), использует `EmailSender`.
-- Перед отправкой проверяется `opt_out_registry`; дубликаты помечаются статусом `skipped`.
-- Статус сохраняется в `outreach_messages` (`sent`, `failed`, `skipped`), с `last_error`, `metadata`, `sent_at`.
+- `app/modules/send_email.py` ведёт очередь писем: `queue` создаёт запись `outreach_messages` со статусом `scheduled`, сохраняет адрес в `metadata.to_email`, добавляет случайную задержку 240–480 секунд, нормализует время в окно 09:10–20:45 (Europe/Moscow) и прикладывает исходный JSON-запрос к LLM (`metadata.llm_request`).
+- Перед доставкой `EmailSender.deliver` проверяет, что текущий момент лежит в рабочем окне, повторно смотрит `opt_out_registry`; при отказе статус меняется на `skipped`.
+- Успешная отправка обновляет запись до `sent`, записывает `sent_at`, `metadata.message_id`; ошибки приводят к статусу `failed` и фиксации `last_error`.
+- Флаг окружения `EMAIL_SENDING_ENABLED=false` отключает доставку: письма остаются в статусе `scheduled`, а воркер ограничивается постановкой очереди.
 
 ### Тесты
 - `tests/test_email_modules.py` мокает OpenAI и SMTP, проверяет fallback, отправку, обработку opt-out и сохранение статусов.
@@ -188,12 +189,12 @@
 ## Этап 9. Оркестрация и планировщик
 
 ### Оркестратор
-- `app/orchestrатор.py` объединяет pipeline: может ставить deferred-запросы, выполнять polling, ingest, дедуп, enrichment и рассылку.
+- `app/orchestrатор.py` объединяет pipeline: может ставить deferred-запросы, выполнять polling, ingest, дедуп, enrichment и двухфазную рассылку (queue → deliver).
 - Конфиг `OrchestratorConfig` задаёт batch size, интервал цикла и флаг `enable_scheduling`, поэтому один и тот же класс используется как для планировщика, так и для основной службы.
 - В оркестраторе используются все модули: `YandexDeferredClient`, `SerpIngestService`, `DeduplicationService`, `ContactEnricher`, `EmailGenerator`, `EmailSender`.
 
 ### Службы Docker
-- `app/main.py` запускает оркестратор в режиме `once` или `loop` (CLI аргументы) c отключённым планированием: он занимается polling → ingest → дедуп → enrichment → отправкой.
+- `app/main.py` запускает оркестратор в режиме `once` или `loop` (CLI аргументы) c отключённым планированием: он выполняет polling → ingest → дедуп → enrichment → постановку писем в очередь → доставку (только внутри окна 09:10–20:45 МСК).
 - `app/scheduler.py` создаёт deferred-запросы в ночное окно, остальные шаги выполняет основная служба.
 - `app/worker.py` отвечает за enrichment контактов и рассылку, работает циклически.
 
