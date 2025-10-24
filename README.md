@@ -10,12 +10,20 @@
 - `docker-compose.yml` — оркестрация сервисов (`app`, `scheduler`, `worker`, `db`, `redis`).
 - `.env`, `.env.example` — переменные окружения (секреты не коммитим, `.env` добавлен в `.gitignore`).
 
+## Требования
+
+- Docker 24.0+ и docker compose plugin
+- Возможность открыть исходящие соединения на `smtp.gmail.com:587` (или другой SMTP)
+- Доступ к Yandex Search API и Google Sheets
+
 ## Подготовка окружения
 
 ```bash
 cp .env.example .env  # заполните значения согласно комментариям
 docker compose pull   # заранее загрузить базовые образы
 ```
+
+После заполнения `.env` примените миграции (см. раздел «Миграции БД») и запустите compose.
 
 ## Быстрый старт в Docker Compose
 
@@ -38,8 +46,108 @@ docker compose up --build
 4. **Дедупликация компаний.** `DeduplicationService` перебирает `companies`, пересчитывает `dedupe_hash` (по имени и домену), помечает первичные записи и закрывает дубликаты. Дубликатам присваивается статус `duplicate` и `opt_out=True`, чтобы исключить их из дальнейшего пайплайна.
 5. **Обогащение контактов.** Воркер `worker` и оркестратор выбирают компании без контактов. `ContactEnricher` строит список страниц (`/`, `/contact`, `/about` и др.), скачивает HTML, сохраняет текстовый фрагмент главной страницы в `companies.attributes.homepage_excerpt`, извлекает только первый найденный `mailto` email и записывает его в `contacts` как основной.
 6. **Генерация писем.** Для каждого email без рассылки оркестратор собирает `CompanyBrief` и `OfferBrief`, затем `EmailGenerator` вызывает OpenAI Chat Completions (`gpt-4.1-mini`). При отсутствии ключа или ошибке возвращается предсказуемый fallback-шаблон. Ответ парсится по JSON-схеме и возвращает пару `subject`/`body`.
-7. **Очередь рассылки.** `EmailSender.queue` сохраняет результат генерации в `outreach_messages` со статусом `scheduled`, добавляя случайную задержку 4–8 минут и гарантируя, что `scheduled_for` попадает в окно 09:10–20:45 по МСК. В `metadata` кладётся email получателя и исходный JSON-запрос к LLM, что позволяет аудитировать письма до фактической отправки и повторно поднимать зависшие сообщения.
-8. **Доставка и повторные запуски.** В рабочем окне сервис выбирает `scheduled` записи с `scheduled_for <= NOW()`, снова проверяет opt-out и только потом отправляет письмо через SMTP (`EmailSender.deliver`). Статус обновляется на `sent`/`failed`/`skipped`, добавляются `sent_at`, `message_id`, `last_error`. `app/main.py` и `worker` крутят полный цикл (`scheduled/processed/enriched/queued/sent`), и благодаря идемпотентным upsert перезапуски безопасны.
+7. **Очередь рассылки.** `EmailSender.queue` сохраняет результат генерации в `outreach_messages` со статусом `scheduled`, добавляя случайную задержку 4–8 минут и гарантируя, что `scheduled_for` попадает в окно 09:10–23:30 по МСК. Email и JSON-запрос LLM кладутся в `metadata`, чтобы можно было восстановить, что именно отправляется.
+8. **Доставка.** Во время рабочего окна сервис выбирает `scheduled` записи с просроченным `scheduled_for`, проверяет opt-out и отправляет письмо через SMTP (`EmailSender.deliver`). Статус меняется на `sent`/`failed`/`skipped`, пишутся `sent_at`, `message_id`, `last_error`. Повторы исключены: отбор идёт с блокировкой строк (SKIP LOCKED).
+9. **Статусы компаний.** После обхода контактов компания получает `contacts_ready`. Если email не найден, записывается `contacts_not_found`, и оркестратор её больше не обрабатывает.
+
+## Локальный запуск
+
+1. **Подготовьте окружение:**
+   ```bash
+   cp .env.example .env
+   # Заполните .env значениями для Yandex, Google, SMTP, OPENAI
+   docker compose pull
+   ```
+2. **Примените миграции:**
+   ```bash
+   docker compose up -d db
+   docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
+   ```
+3. **Запустите сервисы:**
+   ```bash
+   docker compose up --build
+   ```
+4. **Проверка рассылки:** убедитесь, что `EMAIL_SENDING_ENABLED=true`, а текущее время попадает в окно 09:10–23:30 (МСК). Для ручного теста можно изменить `scheduled_for` конкретной записи.
+
+## Полезные команды
+
+- Запуск синхронизации Google Sheets вручную:
+  ```bash
+  docker compose run --rm app python -m app.tools.sync_sheet --batch-tag <tag>
+  ```
+- Просмотр очереди писем:
+  ```bash
+  docker compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "SELECT id, scheduled_for, status FROM outreach_messages ORDER BY scheduled_for LIMIT 20;"
+  ```
+- Перепланировать очередь с задержкой (пример интерактивного скрипта):
+  ```bash
+  docker compose run --rm app python - <<'PY'
+  import random
+  from datetime import datetime, timedelta, timezone
+  from zoneinfo import ZoneInfo
+  from sqlalchemy import text
+  from app.modules.send_email import EmailSender
+  from app.modules.utils.db import get_session_factory
+
+  sender = EmailSender()
+  tz = ZoneInfo(sender.timezone_name)
+  current = datetime.now(tz)
+  session = get_session_factory()()
+  rows = session.execute(text("SELECT id FROM outreach_messages WHERE status='scheduled' ORDER BY created_at"))
+  for row in rows.mappings():
+      current += timedelta(seconds=random.randint(240, 480))
+      session.execute(text("UPDATE outreach_messages SET scheduled_for = :ts WHERE id = :id"),
+                      {"ts": current.astimezone(timezone.utc), "id": row["id"]})
+  session.commit()
+  PY
+  ```
+- Переотправка письма вручную:
+  ```bash
+  docker compose run --rm app python - <<'PY'
+  from app.modules.send_email import EmailSender
+  sender = EmailSender()
+  sender.deliver(
+      outreach_id="<uuid>",
+      company_id="<company uuid>",
+      contact_id="<contact uuid>",
+      to_email="test@example.com",
+      subject="Тест",
+      body="Тестовое письмо"
+  )
+  PY
+  ```
+
+## Деплой на удалённом сервере через Git
+
+1. **Подготовка сервера:** установите Docker и docker compose plugin, создайте отдельного пользователя без root.
+2. **Клонируйте репозиторий:**
+   ```bash
+   git clone https://github.com/kodjooo/lead-generation.git
+   cd lead-generation
+   cp .env.example .env
+   ```
+3. **Заполните `.env`:** пропишите ключи Yandex и Google, параметры SMTP (пароль приложения берите в кавычках), установите `EMAIL_SENDING_ENABLED=true`.
+4. **Примените миграции:**
+   ```bash
+   docker compose up -d db
+   docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
+   ```
+5. **Запустите сервисы:**
+   ```bash
+   docker compose up -d --build
+   ```
+6. **Обновление:**
+   ```bash
+   git pull
+   docker compose up -d --build
+   ```
+   Если есть новые миграции — повторите шаг 4.
+7. **Мониторинг:**
+   ```bash
+   docker compose logs -f app
+   docker compose logs -f worker
+   ```
 
 ### Управление оркестратором
 
@@ -101,19 +209,16 @@ docker compose run --rm app --mode once
 После обновления проекта выполните SQL-миграции:
 
 ```bash
-docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0001_init.sql
-docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0002_reporting.sql
-docker compose exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/0003_add_modified_at_serp_operations.sql
+docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
 ```
 
 ## Развёртывание на удалённом сервере
 
-1. Установите Docker и плагин docker compose (например, `apt install docker.io docker-compose-plugin`).
-2. Создайте отдельного пользователя без пароля root-доступа, добавьте его в группу `docker`.
-3. Выполните `git pull https://github.com/kodjooo/lead-generation.git` в целевой директории и заполните `.env` секретами (используйте `scp`/`sftp` или менеджер секретов).
-4. Запустите `docker compose up -d --build` и убедитесь, что все сервисы перешли в состояние `healthy`.
-5. Настройте автоматический старт (systemd unit, cron `@reboot` или Docker restart policies уже включены).
-6. Организуйте бэкапы каталога `pg_data` (PostgreSQL) и аудит логов (`docker logs` или Loki/ELK).
+См. раздел «Деплой на удалённом сервере через Git» выше — там перечислены все шаги (клонирование репозитория, заполнение `.env`, миграции и запуск). Дополнительно рекомендуется настроить:
+
+- автоматический старт с помощью systemd unit, если сервер перезагружается;
+- регулярные бэкапы каталога `pg_data` и файла `.env`;
+- централизованный сбор логов (`docker compose logs`, Loki, ELK и т.д.).
 
 ## Тестирование
 
