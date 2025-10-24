@@ -133,6 +133,16 @@ class IamTokenProvider:
 
 def load_service_account_key_from_file(path: Path) -> ServiceAccountKey:
     """Читает ключ сервисного аккаунта из файла JSON."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Файл ключа сервисного аккаунта не найден: {path}. "
+            "Убедитесь, что файл существует на хосте и примонтирован в контейнер."
+        )
+    if path.is_dir():
+        raise IsADirectoryError(
+            f"Ожидался файл ключа сервисного аккаунта, но обнаружена директория: {path}. "
+            "Проверьте, что на хостовой машине присутствует файл JSON; если путь отсутствует, Docker создаёт директорию."
+        )
     data = json.loads(path.read_text(encoding="utf-8"))
     return ServiceAccountKey(
         service_account_id=data["service_account_id"],

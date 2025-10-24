@@ -137,10 +137,11 @@ services:
    cp .env.example .env
    ```
 3. **Заполните `.env`:** пропишите ключи Yandex и Google, параметры SMTP (пароль приложения берите в кавычках), установите `EMAIL_SENDING_ENABLED=true`.
-4. **Примените миграции:**
+4. **Разместите ключи сервисных аккаунтов:** скопируйте файлы JSON в каталог `secure/` на сервере. Если файла нет (`secure/authorized_key.json`), Docker создаст директорию с таким именем, и сервисы завершатся ошибкой `IsADirectoryError`.
+5. **Примените миграции:**
    ```bash
-   docker-compose up -d db
-   docker-compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
+   docker compose up -d db
+   docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
    ```
 
    Если вызываете команду прямо в терминале сервера и переменные окружения недоступны, подставьте значения явно (по умолчанию `leadgen`):
@@ -151,21 +152,21 @@ services:
    done
    ```
    
-5. **Запустите сервисы:**
+6. **Запустите сервисы:**
    ```bash
-   docker-compose up -d --build
+   docker compose up -d --build
    ```
    Хостовой Redis останавливать не нужно: контейнерный Redis работает только внутри сети compose и не занимает порт `6379` на сервере.
-6. **Обновление:**
+7. **Обновление:**
    ```bash
    git pull
-   docker-compose up -d --build
+   docker compose up -d --build
    ```
    Если есть новые миграции — повторите шаг 4.
-7. **Мониторинг:**
+8. **Мониторинг:**
    ```bash
-   docker-compose logs -f app
-   docker-compose logs -f worker
+   docker compose logs -f app
+   docker compose logs -f worker
    ```
 
 ### Управление оркестратором
