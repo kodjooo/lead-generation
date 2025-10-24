@@ -70,7 +70,7 @@ RETURNING id;
 """
 
 SEND_WINDOW_START = time(9, 10)
-SEND_WINDOW_END = time(23, 30)
+SEND_WINDOW_END = time(19, 45)
 
 
 class EmailSender:

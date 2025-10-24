@@ -179,7 +179,7 @@
 - При ошибках API или отсутствии ключа используется deterministic fallback.
 
 ### Отправка
-- `app/modules/send_email.py` ведёт очередь писем: `queue` создаёт запись `outreach_messages` со статусом `scheduled`, сохраняет адрес в `metadata.to_email`, добавляет случайную задержку 240–480 секунд, нормализует время в окно 09:10–20:45 (Europe/Moscow) и прикладывает исходный JSON-запрос к LLM (`metadata.llm_request`).
+- `app/modules/send_email.py` ведёт очередь писем: `queue` создаёт запись `outreach_messages` со статусом `scheduled`, сохраняет адрес в `metadata.to_email`, добавляет случайную задержку 240–480 секунд, нормализует время в окно 09:10–19:45 (Europe/Moscow) и прикладывает исходный JSON-запрос к LLM (`metadata.llm_request`).
 - Перед доставкой `EmailSender.deliver` проверяет, что текущий момент лежит в рабочем окне, повторно смотрит `opt_out_registry`; при отказе статус меняется на `skipped`.
 - Успешная отправка обновляет запись до `sent`, записывает `sent_at`, `metadata.message_id`; ошибки приводят к статусу `failed` и фиксации `last_error`.
 - Флаг окружения `EMAIL_SENDING_ENABLED=false` отключает доставку: письма остаются в статусе `scheduled`, а воркер ограничивается постановкой очереди.
@@ -195,7 +195,7 @@
 - В оркестраторе используются все модули: `YandexDeferredClient`, `SerpIngestService`, `DeduplicationService`, `ContactEnricher`, `EmailGenerator`, `EmailSender`.
 
 ### Службы Docker
-- `app/main.py` запускает оркестратор в режиме `once` или `loop` (CLI аргументы) c отключённым планированием: он выполняет polling → ingest → дедуп → enrichment → постановку писем в очередь → доставку (только внутри окна 09:10–20:45 МСК).
+- `app/main.py` запускает оркестратор в режиме `once` или `loop` (CLI аргументы) c отключённым планированием: он выполняет polling → ingest → дедуп → enrichment → постановку писем в очередь → доставку (только внутри окна 09:10–19:45 МСК).
 - `app/scheduler.py` создаёт deferred-запросы в ночное окно, остальные шаги выполняет основная служба.
 - `app/worker.py` отвечает за enrichment контактов и рассылку, работает циклически.
 
