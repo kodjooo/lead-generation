@@ -60,9 +60,11 @@ LIMIT 1;
 SELECT_LAST_SCHEDULED_SQL = """
 SELECT scheduled_for
 FROM outreach_messages
-WHERE scheduled_for IS NOT NULL
+WHERE channel = 'email'
+  AND scheduled_for IS NOT NULL
 ORDER BY scheduled_for DESC
-LIMIT 1;
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
 """
 
 
@@ -354,7 +356,6 @@ class EmailSender:
             anchor = local_now
 
         delay_seconds = random.randint(240, 480)
-
         scheduled_local = self._pick_time_within_window(anchor, delay_seconds)
         return scheduled_local.astimezone(timezone.utc)
 
