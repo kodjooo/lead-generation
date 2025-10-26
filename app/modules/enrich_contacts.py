@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from unicodedata import category
+from typing import Dict, Iterable, List, Optional, Set
 from urllib.parse import urljoin
 
 import httpx
@@ -209,7 +210,9 @@ class ContactEnricher:
         text_content = soup.get_text(" ", strip=True)
         if not text_content:
             return
-        excerpt = text_content[:HOMEPAGE_EXCERPT_LIMIT]
+        excerpt = self._sanitize_excerpt(text_content)[:HOMEPAGE_EXCERPT_LIMIT]
+        if not excerpt:
+            return
         patch = json.dumps({"homepage_excerpt": excerpt})
         session.execute(
             text(
@@ -217,3 +220,10 @@ class ContactEnricher:
             ),
             {"company_id": company_id, "patch": patch},
         )
+
+    @staticmethod
+    def _sanitize_excerpt(text_value: str) -> str:
+        """Удаляет невалидные для PostgreSQL JSON символы (например, NUL)."""
+        if not text_value:
+            return ""
+        return "".join(ch for ch in text_value if ch != "\x00" and category(ch) != "Cc")

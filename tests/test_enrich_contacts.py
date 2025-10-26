@@ -1,5 +1,7 @@
 """Тесты обогащения контактами."""
 
+import json
+
 import httpx
 import respx
 
@@ -111,8 +113,11 @@ def test_enrich_company_marks_not_found() -> None:
               </body>
             </html>
             """,
+            )
         )
-    )
+
+    for suffix in ["contact", "contacts", "about", "about-us", "kontakty"]:
+        respx.get(f"https://empty.com/{suffix}").mock(return_value=httpx.Response(404, text="not found"))
 
     inserted = enricher.enrich_company("company-2", "empty.com", session=session)
 
@@ -120,3 +125,17 @@ def test_enrich_company_marks_not_found() -> None:
     status_calls = [call for call in session.calls if "SET status" in call[0]]
     assert status_calls
     assert status_calls[-1][1]["status"] == "contacts_not_found"
+
+
+def test_sanitize_excerpt_removes_control_chars() -> None:
+    session = DummySession()
+    enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    dirty_html = "<html><body>Привет\u0000 мир\u0008!</body></html>"
+    enricher._save_homepage_excerpt(session, "company-3", dirty_html)
+
+    update_call = next(call for call in session.calls if "UPDATE companies" in call[0])
+    payload = update_call[1]["patch"]
+    data = json.loads(payload)
+    assert data["homepage_excerpt"] == "Привет мир!"
+    assert "\u0000" not in data["homepage_excerpt"]
