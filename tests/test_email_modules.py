@@ -1,7 +1,7 @@
 """Тесты генерации и отправки писем."""
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import MagicMock
 
@@ -38,6 +38,14 @@ class DummyUpdateResult:
         return self._value
 
 
+class DummyScalarResult:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+
 class DummySession:
     def __init__(self, opt_out_emails: Optional[List[str]] = None) -> None:
         self.opt_out_emails = {email.lower() for email in (opt_out_emails or [])}
@@ -47,6 +55,15 @@ class DummySession:
         sql = statement.text if hasattr(statement, "text") else str(statement)
         params = params or {}
         self.calls.append((sql.strip(), params))
+
+        if "SELECT scheduled_for" in sql and "FROM outreach_messages" in sql:
+            last = None
+            for recorded_sql, recorded_params in reversed(self.calls[:-1]):
+                if "INSERT INTO outreach_messages" in recorded_sql:
+                    last = recorded_params.get("scheduled_for")
+                    if last is not None:
+                        break
+            return DummyScalarResult(last)
 
         if "FROM opt_out_registry" in sql:
             email = params.get("contact_value", "").lower()
@@ -132,7 +149,11 @@ def test_email_sender_queue_persists_email(monkeypatch: pytest.MonkeyPatch) -> N
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     template = generator_template()
-    monkeypatch.setattr(sender, "_compute_scheduled_for", lambda reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        sender,
+        "_compute_scheduled_for",
+        lambda session, reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc),
+    )
 
     outreach_id = sender.queue(
         company_id="c1",
@@ -154,13 +175,74 @@ def test_email_sender_queue_persists_email(monkeypatch: pytest.MonkeyPatch) -> N
     reset_settings_cache()
 
 
+def test_email_sender_queue_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+
+    sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    template = generator_template()
+
+    delays = iter([240, 300])
+    monkeypatch.setattr("app.modules.send_email.random.randint", lambda a, b: next(delays))
+
+    class FixedDatetime(datetime):
+        _values = iter([])
+
+        @classmethod
+        def now(cls, tz=None):
+            value = next(cls._values)
+            if tz is not None:
+                return value.astimezone(tz)
+            return value
+
+    FixedDatetime._values = iter(
+        [
+            datetime(2025, 10, 24, 6, 0, 0, tzinfo=timezone.utc),
+            datetime(2025, 10, 24, 6, 0, 5, tzinfo=timezone.utc),
+        ]
+    )
+    monkeypatch.setattr("app.modules.send_email.datetime", FixedDatetime)
+
+    sender.queue(
+        company_id="c1",
+        contact_id="contact1",
+        to_email="first@example.com",
+        template=template,
+        request_payload=None,
+        session=session,
+    )
+    sender.queue(
+        company_id="c2",
+        contact_id="contact2",
+        to_email="second@example.com",
+        template=template,
+        request_payload=None,
+        session=session,
+    )
+
+    scheduled = [
+        params["scheduled_for"]
+        for sql, params in session.calls
+        if "INSERT INTO outreach_messages" in sql
+    ]
+    assert len(scheduled) >= 2
+    diff_seconds = (scheduled[-1] - scheduled[-2]).total_seconds()
+    assert diff_seconds == pytest.approx(300.0, abs=1.0)
+
+    reset_settings_cache()
+
+
 def test_email_sender_deliver_skips_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession(opt_out_emails=["skip@example.com"])
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     monkeypatch.setattr(sender, "_deliver", MagicMock(side_effect=AssertionError("deliver must not be called")))
-    monkeypatch.setattr(sender, "_compute_scheduled_for", lambda reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        sender,
+        "_compute_scheduled_for",
+        lambda session, reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc),
+    )
     monkeypatch.setattr(sender, "_is_within_send_window", lambda *_: True)
 
     template = generator_template()
@@ -199,7 +281,11 @@ def test_email_sender_deliver_success(monkeypatch: pytest.MonkeyPatch) -> None:
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     deliver_mock = MagicMock()
     monkeypatch.setattr(sender, "_deliver", deliver_mock)
-    monkeypatch.setattr(sender, "_compute_scheduled_for", lambda reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc))
+    monkeypatch.setattr(
+        sender,
+        "_compute_scheduled_for",
+        lambda session, reference=None: datetime(2024, 1, 1, 6, 0, tzinfo=timezone.utc),
+    )
     monkeypatch.setattr(sender, "_is_within_send_window", lambda *_: True)
 
     template = generator_template()

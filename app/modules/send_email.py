@@ -57,6 +57,14 @@ WHERE LOWER(contact_value) = LOWER(:contact_value)
 LIMIT 1;
 """
 
+SELECT_LAST_SCHEDULED_SQL = """
+SELECT scheduled_for
+FROM outreach_messages
+WHERE scheduled_for IS NOT NULL
+ORDER BY scheduled_for DESC
+LIMIT 1;
+"""
+
 
 UPDATE_OUTREACH_SQL = """
 UPDATE outreach_messages
@@ -141,7 +149,7 @@ class EmailSender:
         metadata = {"to_email": to_email}
         if request_payload is not None:
             metadata["llm_request"] = request_payload
-        scheduled_dt = scheduled_for or self._compute_scheduled_for()
+        scheduled_dt = scheduled_for or self._compute_scheduled_for(session=session)
         return self._persist_status(
             session,
             company_id,
@@ -329,26 +337,39 @@ class EmailSender:
                 metadata=metadata_payload,
             )
 
-    def _compute_scheduled_for(self, *, reference: Optional[datetime] = None) -> datetime:
+    def _compute_scheduled_for(
+        self,
+        *,
+        session: Session,
+        reference: Optional[datetime] = None,
+    ) -> datetime:
         now_utc = reference or datetime.now(timezone.utc)
         local_now = now_utc.astimezone(self._tz)
+
+        last_scheduled = session.execute(text(SELECT_LAST_SCHEDULED_SQL)).scalar_one_or_none()
+        if last_scheduled:
+            last_local = last_scheduled.astimezone(self._tz)
+            anchor = last_local if last_local > local_now else local_now
+        else:
+            anchor = local_now
+
         delay_seconds = random.randint(240, 480)
 
-        scheduled_local = self._pick_time_within_window(local_now, delay_seconds)
+        scheduled_local = self._pick_time_within_window(anchor, delay_seconds)
         return scheduled_local.astimezone(timezone.utc)
 
-    def _pick_time_within_window(self, local_now: datetime, delay_seconds: int) -> datetime:
-        window_start = datetime.combine(local_now.date(), SEND_WINDOW_START, tzinfo=self._tz)
-        window_end = datetime.combine(local_now.date(), SEND_WINDOW_END, tzinfo=self._tz)
+    def _pick_time_within_window(self, anchor_local: datetime, delay_seconds: int) -> datetime:
+        window_start = datetime.combine(anchor_local.date(), SEND_WINDOW_START, tzinfo=self._tz)
+        window_end = datetime.combine(anchor_local.date(), SEND_WINDOW_END, tzinfo=self._tz)
 
-        if local_now < window_start:
+        if anchor_local < window_start:
             base = window_start
-        elif local_now > window_end:
-            next_day = local_now.date() + timedelta(days=1)
+        elif anchor_local > window_end:
+            next_day = anchor_local.date() + timedelta(days=1)
             base = datetime.combine(next_day, SEND_WINDOW_START, tzinfo=self._tz)
             window_end = datetime.combine(next_day, SEND_WINDOW_END, tzinfo=self._tz)
         else:
-            base = local_now
+            base = anchor_local
 
         candidate = base + timedelta(seconds=delay_seconds)
         if candidate > window_end:
