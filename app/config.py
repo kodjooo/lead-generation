@@ -34,6 +34,7 @@ class SMTPSettings:
     username: str
     password: str
     sender: str
+    sender_name: str | None
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,7 @@ def get_settings() -> Settings:
         username=_env("SMTP_USERNAME", ""),
         password=_env("SMTP_PASSWORD", ""),
         sender=_env("SMTP_FROM_EMAIL", ""),
+        sender_name=_env("SMTP_FROM_NAME") or None,
     )
 
     google_sheets = GoogleSheetsSettings(

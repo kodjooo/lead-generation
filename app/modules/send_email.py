@@ -8,7 +8,7 @@ import smtplib
 import random
 from datetime import datetime, time, timedelta, timezone
 from email.message import EmailMessage
-from email.utils import make_msgid
+from email.utils import formataddr, make_msgid, parseaddr
 from typing import Dict, Optional
 
 from sqlalchemy import text
@@ -96,13 +96,33 @@ class EmailSender:
     ) -> None:
         settings = get_settings()
         self.settings = smtp_settings or settings.smtp
-        self.from_email = self.settings.sender or settings.smtp.sender or "leadgen@example.com"
+        self.from_email = self._build_from_header()
         self.session_factory = session_factory or get_session_factory()
         self.use_starttls = use_starttls
         self.timeout = timeout
         self.timezone_name = settings.timezone
         self._tz = ZoneInfo(self.timezone_name)
         self.sending_enabled = getattr(settings, "email_sending_enabled", True)
+
+    def _build_from_header(self) -> str:
+        """Формирует заголовок From с учётом имени отправителя."""
+        raw_sender = (self.settings.sender or "").strip()
+        sender_name = (self.settings.sender_name or "").strip() if hasattr(self.settings, "sender_name") else ""
+
+        if sender_name and raw_sender:
+            return formataddr((sender_name, raw_sender))
+
+        name_from_value, email_from_value = parseaddr(raw_sender)
+        if name_from_value and email_from_value:
+            return formataddr((name_from_value, email_from_value))
+
+        if raw_sender:
+            return raw_sender
+
+        fallback = "leadgen@example.com"
+        if sender_name:
+            return formataddr((sender_name, fallback))
+        return fallback
 
     def queue(
         self,

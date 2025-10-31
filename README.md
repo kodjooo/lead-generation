@@ -204,7 +204,7 @@ docker compose run --rm app --mode once
 
 ### Email и OpenAI
 
-- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` — параметры SMTP-провайдера.
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` / `SMTP_FROM_NAME` — параметры SMTP-провайдера и отображаемое имя отправителя.
 - `EMAIL_SENDING_ENABLED` — если `false`, письма только сохраняются в `outreach_messages` со статусом `scheduled`, реальная отправка отключена.
 - `OPENAI_API_KEY` — ключ OpenAI для генерации персонализированных писем.
 

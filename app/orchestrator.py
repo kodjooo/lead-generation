@@ -114,7 +114,8 @@ WHERE ct.contact_type = 'email'
   AND c.attributes ->> 'homepage_excerpt' IS NOT NULL
   AND c.attributes ->> 'homepage_excerpt' <> ''
 ORDER BY ct.first_seen_at
-LIMIT :limit;
+LIMIT :limit
+FOR UPDATE SKIP LOCKED;
 """
 
 SELECT_SERP_QUERY_DETAILS_SQL = """
