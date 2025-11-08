@@ -126,6 +126,14 @@ services:
   PY
   ```
 
+### Чек-лист ручной проверки MX-роутинга
+
+1. Подготовьте по одному адресу с MX Яндекса (`@yandex.ru`), Mail.ru (`@mail.ru`) и Google (`@gmail.com`), а также адрес с намеренно несуществующим доменом.
+2. В очереди (`outreach_messages`) выставьте `scheduled_for` в текущий час и запустите `EmailSender.deliver` (см. команды выше).
+3. Убедитесь, что письма на Яндекс/Мейл.ру ушли через Яндекс SMTP (`metadata.route.provider = "yandex"`, заголовок `From` совпадает с `YANDEX_FROM`, в `Reply-To` указан Gmail).
+4. Проверьте, что письма на остальные домены и адрес с ошибкой DNS отправлены через Gmail с `metadata.mx.class = "OTHER"`/`"UNKNOWN"`.
+5. Протестируйте случай с неверным паролем приложения Яндекса: временно измените `YANDEX_PASS`, перезапустите доставку и убедитесь, что письмо ушло через Gmail с `metadata.route.fallback = true`.
+
 ## Деплой на удалённом сервере через Git
 
 1. **Подготовка сервера:** установите Docker и docker compose plugin, создайте отдельного пользователя без root.
@@ -135,7 +143,7 @@ services:
    cd lead-generation
    cp .env.example .env
    ```
-3. **Заполните `.env`:** пропишите ключи Yandex и Google, параметры SMTP (пароль приложения берите в кавычках), установите `EMAIL_SENDING_ENABLED=true`.
+3. **Заполните `.env`:** пропишите ключи Yandex и Google, Gmail `GMAIL_*` (App Password) и Яндекс `YANDEX_*` параметры, активируйте `ROUTING_ENABLED=true`, установите `EMAIL_SENDING_ENABLED=true`.
 4. **Разместите ключи сервисных аккаунтов:** скопируйте файлы JSON в каталог `secure/` на сервере. Если файла нет (`secure/authorized_key.json`), Docker создаст директорию с таким именем, и сервисы завершатся ошибкой `IsADirectoryError`.
 5. **Примените миграции:**
    ```bash
@@ -204,7 +212,9 @@ docker compose run --rm app --mode once
 
 ### Email и OpenAI
 
-- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM_EMAIL` / `SMTP_FROM_NAME` — параметры SMTP-провайдера и отображаемое имя отправителя.
+- `ROUTING_ENABLED`, `ROUTING_MX_CACHE_TTL_HOURS`, `ROUTING_DNS_TIMEOUT_MS`, `ROUTING_DNS_RESOLVERS`, `ROUTING_RU_MX_PATTERNS`, `ROUTING_FORCE_RU_DOMAINS` — параметры MX-маршрутизации (см. `docs/requirements-RU-Yandex-otherwise-Gmail.md`).
+- `GMAIL_SMTP_HOST`, `GMAIL_SMTP_PORT`, `GMAIL_SMTP_TLS`, `GMAIL_USER`, `GMAIL_PASS`, `GMAIL_FROM` — отправка через Gmail (App Password из Google Account → Security → App Passwords).
+- `YANDEX_SMTP_HOST`, `YANDEX_SMTP_PORT`, `YANDEX_SMTP_SSL`, `YANDEX_USER`, `YANDEX_PASS`, `YANDEX_FROM` — отправка через личный аккаунт Яндекс (пароль приложения в mail.yandex.ru → Настройки → Пароли приложений). Если канал не используется, оставьте значения пустыми.
 - `EMAIL_SENDING_ENABLED` — если `false`, письма только сохраняются в `outreach_messages` со статусом `scheduled`, реальная отправка отключена.
 - `OPENAI_API_KEY` — ключ OpenAI для генерации персонализированных писем.
 

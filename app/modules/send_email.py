@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import smtplib
 import random
+import smtplib
+import ssl
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid, parseaddr
@@ -16,8 +18,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from zoneinfo import ZoneInfo
 
-from app.config import SMTPSettings, get_settings
+from app.config import SMTPChannelSettings, get_settings
 from app.modules.generate_email_gpt import EmailTemplate
+from app.modules.mx_router import MXResult, MXRouter
 from app.modules.utils.db import get_session_factory, session_scope
 
 LOGGER = logging.getLogger("app.send_email")
@@ -83,6 +86,29 @@ SEND_WINDOW_START = time(9, 10)
 SEND_WINDOW_END = time(19, 45)
 
 
+@dataclass
+class RouteContext:
+    """Содержит информацию о выбранном канале отправки."""
+
+    provider: str
+    channel: SMTPChannelSettings
+    mx_result: MXResult
+    reply_to: Optional[str]
+    fallback: bool = False
+
+
+def _mask_email(value: str) -> str:
+    """Маскирует контакт для логов."""
+    if "@" not in value:
+        return value
+    local, domain = value.split("@", 1)
+    if len(local) <= 2:
+        masked = local[0] + "*" * max(len(local) - 1, 0)
+    else:
+        masked = f"{local[:2]}***"
+    return f"{masked}@{domain}"
+
+
 class EmailSender:
     """Отвечает за доставку писем и фиксацию статусов в БД."""
 
@@ -90,13 +116,18 @@ class EmailSender:
         self,
         *,
         session_factory: Optional[sessionmaker[Session]] = None,
-        smtp_settings: Optional[SMTPSettings] = None,
+        smtp_settings: Optional[SMTPChannelSettings] = None,
+        mx_router: Optional[MXRouter] = None,
         use_starttls: bool = True,
         timeout: float = 30.0,
     ) -> None:
         settings = get_settings()
-        self.settings = smtp_settings or settings.smtp
-        self.from_email = self._build_from_header()
+        self.gmail_settings = settings.smtp_gmail
+        self.yandex_settings = settings.smtp_yandex
+        self.routing_settings = settings.routing
+        self.default_channel = smtp_settings or self.gmail_settings
+        self.mx_router = mx_router or MXRouter(self.routing_settings)
+        self.gmail_from_header = self._build_from_header(self.gmail_settings)
         self.session_factory = session_factory or get_session_factory()
         self.use_starttls = use_starttls
         self.timeout = timeout
@@ -104,10 +135,10 @@ class EmailSender:
         self._tz = ZoneInfo(self.timezone_name)
         self.sending_enabled = getattr(settings, "email_sending_enabled", True)
 
-    def _build_from_header(self) -> str:
+    def _build_from_header(self, channel: SMTPChannelSettings) -> str:
         """Формирует заголовок From с учётом имени отправителя."""
-        raw_sender = (self.settings.sender or "").strip()
-        sender_name = (self.settings.sender_name or "").strip() if hasattr(self.settings, "sender_name") else ""
+        raw_sender = (channel.sender or "").strip()
+        sender_name = (channel.sender_name or "").strip() if channel.sender_name else ""
 
         if sender_name and raw_sender:
             return formataddr((sender_name, raw_sender))
@@ -222,7 +253,7 @@ class EmailSender:
         body: str,
     ) -> str:
         if self._is_opt_out(session, to_email):
-            LOGGER.info("Контакт %s в opt-out, письмо не отправляется.", to_email)
+            LOGGER.info("Контакт %s в opt-out, письмо не отправляется.", _mask_email(to_email))
             self._update_status(
                 session,
                 outreach_id,
@@ -233,17 +264,32 @@ class EmailSender:
             )
             return "skipped"
 
-        message_id = make_msgid(domain=self.settings.host.split(":")[0]) if self.settings.host else make_msgid()
         msg = EmailMessage()
         msg["Subject"] = subject
-        msg["From"] = self.from_email
         msg["To"] = to_email
-        msg["Message-ID"] = message_id
         msg.set_content(body)
 
+        route = self._prepare_route(to_email)
+        message_id = self._make_message_id(route.channel)
+        msg["Message-ID"] = message_id
+        self._apply_headers(msg, route.channel, reply_to=route.reply_to)
+        checked_at = datetime.now(timezone.utc)
+
+        metadata: Dict[str, object] = {
+            "message_id": message_id,
+            "mx": {
+                "class": route.mx_result.classification,
+                "records": route.mx_result.records,
+                "checked_at": checked_at.isoformat(),
+            },
+            "route": {
+                "provider": route.provider,
+                "fallback": route.fallback,
+            },
+        }
+
         try:
-            self._deliver(to_email, msg)
-            metadata = {"message_id": message_id}
+            self._send_via_channel(to_email, msg, route.channel)
             self._update_status(
                 session,
                 outreach_id,
@@ -252,10 +298,67 @@ class EmailSender:
                 last_error=None,
                 metadata=metadata,
             )
+            LOGGER.info(
+                "Письмо %s отправлено через %s (mx=%s).",
+                _mask_email(to_email),
+                metadata["route"]["provider"],
+                route.mx_result.classification,
+            )
             return "sent"
+        except smtplib.SMTPAuthenticationError as exc:
+            if route.provider != "yandex":
+                LOGGER.error("Ошибка авторизации SMTP (%s): %s", _mask_email(to_email), exc)
+                metadata["route"]["error"] = str(exc)
+                self._update_status(
+                    session,
+                    outreach_id,
+                    status="failed",
+                    sent_at=None,
+                    last_error=str(exc),
+                    metadata=metadata,
+                )
+                return "failed"
+
+            LOGGER.warning(
+                "Авторизация Яндекс SMTP не удалась для %s: %s. Фолбэк на Gmail.",
+                _mask_email(to_email),
+                exc,
+            )
+            metadata["route"]["fallback"] = True
+            metadata["route"]["error"] = str(exc)
+            metadata["route"]["provider"] = "gmail"
+
+            self._apply_headers(msg, self.gmail_settings, reply_to=None)
+
+            try:
+                self._send_via_channel(to_email, msg, self.gmail_settings)
+                self._update_status(
+                    session,
+                    outreach_id,
+                    status="sent",
+                    sent_at=datetime.now(timezone.utc),
+                    last_error=None,
+                    metadata=metadata,
+                )
+                return "sent"
+            except smtplib.SMTPException as fallback_exc:  # noqa: PERF203
+                metadata["route"]["error"] = str(fallback_exc)
+                self._update_status(
+                    session,
+                    outreach_id,
+                    status="failed",
+                    sent_at=None,
+                    last_error=str(fallback_exc),
+                    metadata=metadata,
+                )
+                LOGGER.error(
+                    "Фолбэк на Gmail для %s завершился ошибкой: %s",
+                    _mask_email(to_email),
+                    fallback_exc,
+                )
+                return "failed"
         except smtplib.SMTPException as exc:  # noqa: PERF203
-            LOGGER.error("Ошибка отправки письма: %s", exc)
-            metadata = {"message_id": message_id}
+            metadata["route"]["error"] = str(exc)
             self._update_status(
                 session,
                 outreach_id,
@@ -264,16 +367,88 @@ class EmailSender:
                 last_error=str(exc),
                 metadata=metadata,
             )
+            LOGGER.error("Ошибка отправки письма (%s): %s", _mask_email(to_email), exc)
             return "failed"
 
-    def _deliver(self, to_email: str, message: EmailMessage) -> None:
-        LOGGER.debug("Отправка письма %s -> %s", message["Message-ID"], to_email)
-        with smtplib.SMTP(self.settings.host, self.settings.port, timeout=self.timeout) as smtp:
-            if self.use_starttls:
-                smtp.starttls()
-            if self.settings.username and self.settings.password:
-                smtp.login(self.settings.username, self.settings.password)
-            smtp.send_message(message)
+    def _prepare_route(self, to_email: str) -> RouteContext:
+        domain = self._extract_domain(to_email)
+        mx_result = self.mx_router.classify(domain) if domain else MXResult("UNKNOWN", [], False)
+        provider = "yandex" if mx_result.classification == "RU" else "gmail"
+        channel = self.yandex_settings if provider == "yandex" else self.gmail_settings
+        reply_to = self.gmail_from_header if provider == "yandex" and self.gmail_from_header else None
+        fallback = False
+
+        if provider == "yandex" and not self._channel_configured(channel):
+            LOGGER.warning(
+                "Выбран Яндекс SMTP для %s, но конфигурация неполная. Фолбэк на Gmail.",
+                domain or _mask_email(to_email),
+            )
+            provider = "gmail"
+            channel = self.gmail_settings
+            reply_to = None
+            fallback = True
+
+        if provider == "gmail" and not self._channel_configured(channel):
+            channel = self.default_channel
+
+        return RouteContext(
+            provider=provider,
+            channel=channel,
+            mx_result=mx_result,
+            reply_to=reply_to,
+            fallback=fallback,
+        )
+
+    def _apply_headers(self, message: EmailMessage, channel: SMTPChannelSettings, *, reply_to: Optional[str]) -> None:
+        if "From" in message:
+            del message["From"]
+        if "Reply-To" in message:
+            del message["Reply-To"]
+        message["From"] = self._build_from_header(channel)
+        if reply_to:
+            message["Reply-To"] = reply_to
+
+    @staticmethod
+    def _channel_configured(channel: SMTPChannelSettings) -> bool:
+        return bool(channel.host and channel.port)
+
+    @staticmethod
+    def _extract_domain(email: str) -> Optional[str]:
+        _, parsed = parseaddr(email)
+        if "@" not in parsed:
+            return None
+        return parsed.split("@", 1)[1].lower()
+
+    def _send_via_channel(self, to_email: str, message: EmailMessage, channel: SMTPChannelSettings) -> None:
+        if not channel.host:
+            raise smtplib.SMTPException("SMTP host is not configured.")
+
+        LOGGER.debug(
+            "Отправка письма %s -> %s через %s",
+            message["Message-ID"],
+            _mask_email(to_email),
+            channel.host,
+        )
+        if channel.use_ssl:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(channel.host, channel.port, timeout=self.timeout, context=context) as smtp:
+                self._login_if_needed(smtp, channel)
+                smtp.send_message(message)
+        else:
+            with smtplib.SMTP(channel.host, channel.port, timeout=self.timeout) as smtp:
+                if channel.use_tls and self.use_starttls:
+                    smtp.starttls()
+                self._login_if_needed(smtp, channel)
+                smtp.send_message(message)
+
+    @staticmethod
+    def _login_if_needed(smtp: smtplib.SMTP, channel: SMTPChannelSettings) -> None:
+        if channel.username and channel.password:
+            smtp.login(channel.username, channel.password)
+
+    def _make_message_id(self, channel: SMTPChannelSettings) -> str:
+        domain = channel.host.split(":")[0] if channel.host else None
+        return make_msgid(domain=domain)
 
     def _is_opt_out(self, session: Session, to_email: str) -> bool:
         result = session.execute(text(CHECK_OPT_OUT_SQL), {"contact_value": to_email})

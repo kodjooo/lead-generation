@@ -18,6 +18,11 @@ def default_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SMTP_USERNAME", "test-smtp")
     monkeypatch.setenv("SMTP_PASSWORD", "test-smtp-password")
     monkeypatch.setenv("SMTP_FROM_EMAIL", "leadgen@example.com")
+    monkeypatch.setenv("GMAIL_USER", "test-smtp")
+    monkeypatch.setenv("GMAIL_PASS", "test-smtp-password")
+    monkeypatch.setenv("GMAIL_FROM", "Lead Gen <leadgen@example.com>")
+    monkeypatch.setenv("GMAIL_SMTP_TLS", "true")
+    monkeypatch.setenv("ROUTING_ENABLED", "false")
 
 
 @pytest.fixture

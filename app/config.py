@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from email.utils import parseaddr
 from functools import lru_cache
+from typing import List, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -26,8 +28,8 @@ class DatabaseSettings:
 
 
 @dataclass(frozen=True)
-class SMTPSettings:
-    """Настройки SMTP отправителя."""
+class SMTPChannelSettings:
+    """Параметры SMTP-канала."""
 
     host: str
     port: int
@@ -35,6 +37,26 @@ class SMTPSettings:
     password: str
     sender: str
     sender_name: str | None
+    use_tls: bool
+    use_ssl: bool
+
+    def from_header(self) -> str:
+        """Готовый заголовок From для канала."""
+        if self.sender_name:
+            return f"{self.sender_name} <{self.sender}>"
+        return self.sender
+
+
+@dataclass(frozen=True)
+class RoutingSettings:
+    """Настройки MX-маршрутизации."""
+
+    enabled: bool
+    mx_cache_ttl_hours: int
+    dns_timeout_seconds: float
+    dns_resolvers: Tuple[str, ...]
+    ru_mx_patterns: Tuple[str, ...]
+    force_ru_domains: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -70,7 +92,10 @@ class Settings:
     email_sending_enabled: bool
     redis_url: str
     database: DatabaseSettings
-    smtp: SMTPSettings
+    smtp: SMTPChannelSettings
+    smtp_gmail: SMTPChannelSettings
+    smtp_yandex: SMTPChannelSettings
+    routing: RoutingSettings
     google_sheets: GoogleSheetsSettings
     sheet_sync: SheetSyncSettings
 
@@ -87,6 +112,35 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_list(key: str, default: Sequence[str] | None = None) -> List[str]:
+    value = os.getenv(key)
+    if value is None:
+        return list(default or [])
+    separators = {",", "\n", ";"}
+    buffer = []
+    current = []
+    for char in value:
+        if char in separators:
+            chunk = "".join(current).strip()
+            if chunk:
+                buffer.append(chunk)
+            current = []
+        else:
+            current.append(char)
+    chunk = "".join(current).strip()
+    if chunk:
+        buffer.append(chunk)
+    return buffer
+
+
+def _sender_from_combined(combined: str | None, fallback_email: str, fallback_name: str | None) -> Tuple[str, str | None]:
+    if combined:
+        name, email = parseaddr(combined)
+        if email:
+            return email, name or fallback_name
+    return fallback_email, fallback_name
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     """Загружает настройки один раз и кэширует их для повторного использования."""
@@ -98,13 +152,64 @@ def get_settings() -> Settings:
         name=_env("POSTGRES_DB", "leadgen"),
     )
 
-    smtp = SMTPSettings(
-        host=_env("SMTP_HOST", "smtp.gmail.com"),
-        port=int(_env("SMTP_PORT", "587")),
-        username=_env("SMTP_USERNAME", ""),
-        password=_env("SMTP_PASSWORD", ""),
-        sender=_env("SMTP_FROM_EMAIL", ""),
-        sender_name=_env("SMTP_FROM_NAME") or None,
+    gmail_sender_email = _env("GMAIL_FROM_EMAIL") or _env("SMTP_FROM_EMAIL", "")
+    gmail_sender_name = _env("GMAIL_FROM_NAME") or _env("SMTP_FROM_NAME") or None
+    gmail_sender_email, gmail_sender_name = _sender_from_combined(
+        _env("GMAIL_FROM") or None,
+        gmail_sender_email,
+        gmail_sender_name,
+    )
+    gmail = SMTPChannelSettings(
+        host=_env("GMAIL_SMTP_HOST") or _env("SMTP_HOST", "smtp.gmail.com"),
+        port=int(_env("GMAIL_SMTP_PORT") or _env("SMTP_PORT", "587")),
+        username=_env("GMAIL_USER") or _env("SMTP_USERNAME", ""),
+        password=_env("GMAIL_PASS") or _env("SMTP_PASSWORD", ""),
+        sender=gmail_sender_email,
+        sender_name=gmail_sender_name,
+        use_tls=_env_bool("GMAIL_SMTP_TLS", True),
+        use_ssl=_env_bool("GMAIL_SMTP_SSL", False),
+    )
+
+    yandex_sender_email = _env("YANDEX_FROM_EMAIL") or _env("YANDEX_USER", "")
+    yandex_sender_name = _env("YANDEX_FROM_NAME") or None
+    yandex_sender_email, yandex_sender_name = _sender_from_combined(
+        _env("YANDEX_FROM") or None,
+        yandex_sender_email,
+        yandex_sender_name,
+    )
+    yandex = SMTPChannelSettings(
+        host=_env("YANDEX_SMTP_HOST", ""),
+        port=int(_env("YANDEX_SMTP_PORT", "465")),
+        username=_env("YANDEX_USER"),
+        password=_env("YANDEX_PASS"),
+        sender=yandex_sender_email,
+        sender_name=yandex_sender_name,
+        use_tls=_env_bool("YANDEX_SMTP_TLS", False),
+        use_ssl=_env_bool("YANDEX_SMTP_SSL", True),
+    )
+
+    routing = RoutingSettings(
+        enabled=_env_bool("ROUTING_ENABLED", True),
+        mx_cache_ttl_hours=int(_env("ROUTING_MX_CACHE_TTL_HOURS", "168")),
+        dns_timeout_seconds=max(int(_env("ROUTING_DNS_TIMEOUT_MS", "1500")) / 1000.0, 0.1),
+        dns_resolvers=tuple(_env_list("ROUTING_DNS_RESOLVERS", ["1.1.1.1", "8.8.8.8"])),
+        ru_mx_patterns=tuple(_env_list("ROUTING_RU_MX_PATTERNS", [
+            "mx.yandex.net",
+            "mxs.mail.ru",
+            "mx1.mail.ru",
+            "mxs-cloud.mail.ru",
+            "mx.rambler.ru",
+            "mxs.rambler.ru",
+        ])),
+        force_ru_domains=tuple(_env_list("ROUTING_FORCE_RU_DOMAINS", [
+            "yandex.ru",
+            "yandex.com",
+            "mail.ru",
+            "bk.ru",
+            "inbox.ru",
+            "list.ru",
+            "rambler.ru",
+        ])),
     )
 
     google_sheets = GoogleSheetsSettings(
@@ -131,7 +236,10 @@ def get_settings() -> Settings:
         email_sending_enabled=_env_bool("EMAIL_SENDING_ENABLED", True),
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,
-        smtp=smtp,
+        smtp=gmail,
+        smtp_gmail=gmail,
+        smtp_yandex=yandex,
+        routing=routing,
         google_sheets=google_sheets,
         sheet_sync=sheet_sync,
     )

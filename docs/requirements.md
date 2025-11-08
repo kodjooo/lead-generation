@@ -31,7 +31,7 @@
 │
 ├── main.py                     # оркестратор пайплайна (шаги + планировщик)
 ├── config.py                   # конфиги (ключи, лимиты, окна, модели, тайминги)
-├── .env                        # секреты (YC tokens, SMTP, OpenAI), не коммитим
+├── .env                        # секреты (YC tokens, ROUTING_*, GMAIL_*/YANDEX_*, OpenAI), не коммитим
 │
 ├── modules/
 │   ├── yandex_deferred.py      # создание и опрос deferred‑запросов к Yandex Search API
@@ -262,7 +262,7 @@ for op in serp_queries where status=SUBMITTED:
 
 8) Отправка писем и антиспам‑гигиена
 ──────────────────────────────────────────────────────────────────────────────
-Стартовый провайдер: Gmail SMTP (до ~100/день).
+Стартовые провайдеры: Gmail (до ~100/день) + резерв Яндекс для MX класса RU.
 • Случайные паузы 2‑7 мин между письмами (на акк).
 • DKIM/SPF/DMARC — настроить на домене, если используем кастомный домен отправителя.
 • Unsubscribe/Opt‑out: отдельный трекер ссылок или простое «ответьте STOP».
@@ -303,14 +303,31 @@ OPENAI:
   CASES_URL="https://docs.google.com/document/d/..."
   MAX_BODY_CHARS=1200
 
-SMTP:
-  PROVIDER="gmail"
-  SMTP_SERVER="smtp.gmail.com"
-  SMTP_PORT=587
-  SMTP_EMAIL="you@example.com"
-  SMTP_APP_PASSWORD="..."
+ROUTING:
+  ENABLED=true
+  MX_CACHE_TTL_HOURS=168
+  DNS_TIMEOUT_MS=1500
+  DNS_RESOLVERS=["1.1.1.1","8.8.8.8"]
+  RU_PATTERNS=["mx.yandex.net","mxs.mail.ru","mx1.mail.ru","mxs-cloud.mail.ru","mx.rambler.ru","mxs.rambler.ru"]
+  FORCE_RU_DOMAINS=["yandex.ru","mail.ru","bk.ru","inbox.ru","list.ru","rambler.ru"]
+
+GMAIL:
+  GMAIL_SMTP_HOST="smtp.gmail.com"
+  GMAIL_SMTP_PORT=587
+  TLS=true
+  USER="you@example.com"
+  APP_PASSWORD="..."
+  FROM="Имя Отправителя <you@example.com>"
   DAILY_LIMIT=100
   SLEEP_BETWEEN=(120,420)
+
+YANDEX:
+  YANDEX_SMTP_HOST="smtp.yandex.ru"
+  YANDEX_SMTP_PORT=465
+  SSL=true
+  USER="mark@yandex.ru"
+  APP_PASSWORD="..."
+  FROM="Имя Отправителя <mark@yandex.ru>"
 
 CRAWL:
   FETCH_TIMEOUT=15
@@ -401,7 +418,7 @@ CRAWL:
 16) Чек‑лист внедрения
 ──────────────────────────────────────────────────────────────────────────────
 [ ] Завести Yandex Cloud проект, получить IAM‑токен/аккаунт, настроить доступ к Search API.
-[ ] Заполнить .env (YC_*, SMTP_*, OpenAI_*).
+[ ] Заполнить .env (YC_*, ROUTING_*, GMAIL_*, YANDEX_*, OpenAI_*).
 [ ] Прописать NIGHT_UTC_WINDOW и расписание (cron/systemd/Docker).
 [ ] Прогнать миграции БД, включить WAL (если SQLite).
 [ ] Задать темы/регионы/языки запросов (генерация query_text).

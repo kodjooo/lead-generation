@@ -12,6 +12,7 @@ import respx
 from app.config import get_settings
 from app.modules.generate_email_gpt import CompanyBrief, EmailGenerator, OfferBrief
 from app.modules.send_email import EmailSender
+from app.modules.mx_router import MXResult
 
 
 class DummySelectResult:
@@ -237,7 +238,9 @@ def test_email_sender_deliver_skips_opt_out(monkeypatch: pytest.MonkeyPatch) -> 
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
-    monkeypatch.setattr(sender, "_deliver", MagicMock(side_effect=AssertionError("deliver must not be called")))
+    sender.mx_router = MagicMock()
+    sender.mx_router.classify.return_value = MXResult("OTHER", [], False)
+    monkeypatch.setattr(sender, "_send_via_channel", MagicMock(side_effect=AssertionError("deliver must not be called")))
     monkeypatch.setattr(
         sender,
         "_compute_scheduled_for",
@@ -279,8 +282,10 @@ def test_email_sender_deliver_success(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    sender.mx_router = MagicMock()
+    sender.mx_router.classify.return_value = MXResult("OTHER", ["mx.test"], False)
     deliver_mock = MagicMock()
-    monkeypatch.setattr(sender, "_deliver", deliver_mock)
+    monkeypatch.setattr(sender, "_send_via_channel", deliver_mock)
     monkeypatch.setattr(
         sender,
         "_compute_scheduled_for",
@@ -325,8 +330,10 @@ def test_email_sender_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("EMAIL_SENDING_ENABLED", "false")
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    sender.mx_router = MagicMock()
+    sender.mx_router.classify.return_value = MXResult("OTHER", ["mx.test"], False)
     deliver_mock = MagicMock()
-    monkeypatch.setattr(sender, "_deliver", deliver_mock)
+    monkeypatch.setattr(sender, "_send_via_channel", deliver_mock)
     monkeypatch.setattr(sender, "_is_within_send_window", lambda *_: True)
 
     result = sender.deliver(
