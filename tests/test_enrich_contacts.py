@@ -59,6 +59,21 @@ def test_extract_contacts_from_html() -> None:
     assert emails[0].value.lower() == "sales@example.com"
 
 
+def test_extract_contacts_skips_invalid_mailto() -> None:
+    enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
+    html = """
+    <html>
+      <body>
+        <a href="mailto:+74951234567">Позвонить</a>
+      </body>
+    </html>
+    """
+
+    contacts = list(enricher._extract_contacts_from_html(html, "https://example.com"))
+
+    assert contacts == []
+
+
 @respx.mock
 def test_enrich_company_persists_contacts() -> None:
     session = DummySession()

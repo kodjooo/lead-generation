@@ -22,6 +22,7 @@ from app.config import SMTPChannelSettings, get_settings
 from app.modules.generate_email_gpt import EmailTemplate
 from app.modules.mx_router import MXResult, MXRouter
 from app.modules.utils.db import get_session_factory, session_scope
+from app.modules.utils.email import clean_email, is_valid_email
 
 LOGGER = logging.getLogger("app.send_email")
 
@@ -199,9 +200,32 @@ class EmailSender:
         request_payload: Optional[Dict[str, object]],
         scheduled_for: Optional[datetime],
     ) -> str:
-        metadata = {"to_email": to_email}
+        normalized_email = clean_email(to_email)
+        metadata: Dict[str, object] = {
+            "to_email": normalized_email or to_email,
+            "to_email_raw": to_email,
+        }
         if request_payload is not None:
             metadata["llm_request"] = request_payload
+
+        if not is_valid_email(normalized_email):
+            metadata["reason"] = "invalid_email"
+            LOGGER.warning(
+                "Email %s не прошёл валидацию, запись будет помечена как skipped.",
+                to_email,
+            )
+            return self._persist_status(
+                session,
+                company_id,
+                contact_id,
+                template,
+                status="skipped",
+                scheduled_for=None,
+                sent_at=None,
+                last_error="invalid_email",
+                metadata=metadata,
+            )
+
         scheduled_dt = scheduled_for or self._compute_scheduled_for(session=session)
         return self._persist_status(
             session,
@@ -252,8 +276,29 @@ class EmailSender:
         subject: str,
         body: str,
     ) -> str:
-        if self._is_opt_out(session, to_email):
-            LOGGER.info("Контакт %s в opt-out, письмо не отправляется.", _mask_email(to_email))
+        normalized_email = clean_email(to_email)
+        if not is_valid_email(normalized_email):
+            LOGGER.warning(
+                "Outreach %s пропущен — email '%s' не проходит валидацию.",
+                outreach_id,
+                to_email,
+            )
+            self._update_status(
+                session,
+                outreach_id,
+                status="skipped",
+                sent_at=None,
+                last_error="invalid_email",
+                metadata={
+                    "reason": "invalid_email",
+                    "to_email": normalized_email or to_email,
+                    "to_email_raw": to_email,
+                },
+            )
+            return "skipped"
+
+        if self._is_opt_out(session, normalized_email):
+            LOGGER.info("Контакт %s в opt-out, письмо не отправляется.", _mask_email(normalized_email))
             self._update_status(
                 session,
                 outreach_id,
@@ -266,10 +311,10 @@ class EmailSender:
 
         msg = EmailMessage()
         msg["Subject"] = subject
-        msg["To"] = to_email
+        msg["To"] = normalized_email
         msg.set_content(body)
 
-        route = self._prepare_route(to_email)
+        route = self._prepare_route(normalized_email)
         message_id = self._make_message_id(route.channel)
         msg["Message-ID"] = message_id
         self._apply_headers(msg, route.channel, reply_to=route.reply_to)
@@ -277,6 +322,7 @@ class EmailSender:
 
         metadata: Dict[str, object] = {
             "message_id": message_id,
+            "recipient": normalized_email,
             "mx": {
                 "class": route.mx_result.classification,
                 "records": route.mx_result.records,
@@ -289,7 +335,7 @@ class EmailSender:
         }
 
         try:
-            self._send_via_channel(to_email, msg, route.channel)
+            self._send_via_channel(normalized_email, msg, route.channel)
             self._update_status(
                 session,
                 outreach_id,
@@ -300,14 +346,14 @@ class EmailSender:
             )
             LOGGER.info(
                 "Письмо %s отправлено через %s (mx=%s).",
-                _mask_email(to_email),
+                _mask_email(normalized_email),
                 metadata["route"]["provider"],
                 route.mx_result.classification,
             )
             return "sent"
         except smtplib.SMTPAuthenticationError as exc:
             if route.provider != "yandex":
-                LOGGER.error("Ошибка авторизации SMTP (%s): %s", _mask_email(to_email), exc)
+                LOGGER.error("Ошибка авторизации SMTP (%s): %s", _mask_email(normalized_email), exc)
                 metadata["route"]["error"] = str(exc)
                 self._update_status(
                     session,
@@ -321,7 +367,7 @@ class EmailSender:
 
             LOGGER.warning(
                 "Авторизация Яндекс SMTP не удалась для %s: %s. Фолбэк на Gmail.",
-                _mask_email(to_email),
+                _mask_email(normalized_email),
                 exc,
             )
             metadata["route"]["fallback"] = True
@@ -331,7 +377,7 @@ class EmailSender:
             self._apply_headers(msg, self.gmail_settings, reply_to=None)
 
             try:
-                self._send_via_channel(to_email, msg, self.gmail_settings)
+                self._send_via_channel(normalized_email, msg, self.gmail_settings)
                 self._update_status(
                     session,
                     outreach_id,
@@ -353,7 +399,7 @@ class EmailSender:
                 )
                 LOGGER.error(
                     "Фолбэк на Gmail для %s завершился ошибкой: %s",
-                    _mask_email(to_email),
+                    _mask_email(normalized_email),
                     fallback_exc,
                 )
                 return "failed"
@@ -367,7 +413,7 @@ class EmailSender:
                 last_error=str(exc),
                 metadata=metadata,
             )
-            LOGGER.error("Ошибка отправки письма (%s): %s", _mask_email(to_email), exc)
+            LOGGER.error("Ошибка отправки письма (%s): %s", _mask_email(normalized_email), exc)
             return "failed"
 
     def _prepare_route(self, to_email: str) -> RouteContext:
@@ -451,7 +497,8 @@ class EmailSender:
         return make_msgid(domain=domain)
 
     def _is_opt_out(self, session: Session, to_email: str) -> bool:
-        result = session.execute(text(CHECK_OPT_OUT_SQL), {"contact_value": to_email})
+        normalized = clean_email(to_email)
+        result = session.execute(text(CHECK_OPT_OUT_SQL), {"contact_value": normalized})
         return result.first() is not None
 
     def _persist_status(

@@ -16,13 +16,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.modules.constants import HOMEPAGE_EXCERPT_LIMIT
 from app.modules.utils.db import get_session_factory, session_scope
+from app.modules.utils.email import clean_email, is_valid_email
 from app.modules.utils.normalize import normalize_url
 
 LOGGER = logging.getLogger("app.enrich_contacts")
-
-
-def _normalize_email(value: str) -> str:
-    return (value or "").strip().lower()
 
 
 @dataclass
@@ -38,7 +35,7 @@ class ContactRecord:
 
     def normalized_key(self) -> str:
         if self.contact_type == "email":
-            return f"email:{_normalize_email(self.value)}"
+            return f"email:{clean_email(self.value)}"
         return f"other:{self.value}"
 
 
@@ -131,8 +128,8 @@ class ContactEnricher:
 
         inserted_ids: List[str] = []
         record = collected_email
-        cleaned_value = _normalize_email(record.value)
-        if cleaned_value:
+        cleaned_value = clean_email(record.value)
+        if cleaned_value and is_valid_email(cleaned_value):
             metadata = json.dumps({"label": record.label, "source_type": record.contact_type})
             result = session.execute(
                 text(INSERT_CONTACT_SQL),
@@ -147,6 +144,12 @@ class ContactEnricher:
                 },
             )
             inserted_ids.append(str(result.scalar_one()))
+        else:
+            LOGGER.debug(
+                "Получен невалидный e-mail '%s' для компании %s — пропускаем запись.",
+                record.value,
+                company_id,
+            )
 
         if inserted_ids:
             self._mark_company_status(session, company_id, "contacts_ready")
@@ -184,8 +187,12 @@ class ContactEnricher:
             href = (anchor.get("href") or "").strip()
             text = anchor.get_text(" ", strip=True)
             if href.lower().startswith("mailto:"):
-                email = href.split(":", 1)[1].split("?", 1)[0]
-                record = ContactRecord("email", email, source_url, 1.0, origin="mailto", label=text or "mailto")
+                email = href.split(":", 1)[1]
+                cleaned = clean_email(email)
+                if not is_valid_email(cleaned):
+                    LOGGER.debug("Пропускаем mailto без валидного e-mail: %s", email)
+                    continue
+                record = ContactRecord("email", cleaned, source_url, 1.0, origin="mailto", label=text or "mailto")
                 found_email = record
                 break
 

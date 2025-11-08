@@ -180,6 +180,34 @@ def test_email_sender_queue_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
     reset_settings_cache()
 
+
+def test_email_sender_queue_skips_invalid_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+
+    sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    template = generator_template()
+
+    outreach_id = sender.queue(
+        company_id="c1",
+        contact_id="contact1",
+        to_email="+74951234567",
+        template=template,
+        request_payload=None,
+        session=session,
+    )
+
+    assert outreach_id == "outreach-1"
+    sql, params = session.calls[-1]
+    assert "INSERT INTO outreach_messages" in sql
+    assert params["status"] == "skipped"
+    assert params["last_error"] == "invalid_email"
+    metadata = json.loads(params["metadata"])
+    assert metadata["reason"] == "invalid_email"
+    assert metadata["to_email_raw"] == "+74951234567"
+
+    reset_settings_cache()
+
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     template = generator_template()
 
@@ -273,6 +301,45 @@ def test_email_sender_deliver_skips_opt_out(monkeypatch: pytest.MonkeyPatch) -> 
     assert "UPDATE outreach_messages" in sql
     assert params["status"] == "skipped"
     assert params["last_error"] == "opt_out"
+
+    reset_settings_cache()
+
+
+def test_email_sender_deliver_skips_invalid_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+
+    sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    sender.mx_router = MagicMock()
+    sender.mx_router.classify.return_value = MXResult("OTHER", [], False)
+    monkeypatch.setattr(sender, "_send_via_channel", MagicMock())
+    monkeypatch.setattr(sender, "_is_within_send_window", lambda *_: True)
+
+    template = generator_template()
+    outreach_id = sender.queue(
+        company_id="c1",
+        contact_id="contact1",
+        to_email="info@example.com",
+        template=template,
+        request_payload=None,
+        session=session,
+    )
+
+    result = sender.deliver(
+        outreach_id=outreach_id,
+        company_id="c1",
+        contact_id="contact1",
+        to_email="not-an-email",
+        subject=template.subject,
+        body=template.body,
+        session=session,
+    )
+
+    assert result == "skipped"
+    sql, params = session.calls[-1]
+    assert "UPDATE outreach_messages" in sql
+    assert params["status"] == "skipped"
+    assert params["last_error"] == "invalid_email"
 
     reset_settings_cache()
 
