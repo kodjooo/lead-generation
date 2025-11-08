@@ -158,15 +158,12 @@ services:
 5. **Примените миграции:**
    ```bash
    docker compose up -d db
-   docker compose exec db sh -c 'for f in /app/migrations/000*.sql; do psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"; done'
-   ```
-
-   Если вызываете команду прямо в терминале сервера и переменные окружения недоступны, подставьте значения явно (по умолчанию `leadgen`):
-
-   ```bash
    for f in migrations/000*.sql; do
-   docker compose exec -T db psql -U leadgen -d leadgen < "$f"
+     echo "Applying $f"
+     docker compose exec -T db \
+       psql -U leadgen -d leadgen -v ON_ERROR_STOP=1 -f - < "$f"
    done
+   # замените leadgen/leadgen на свои POSTGRES_USER/POSTGRES_DB при необходимости
    ```
    
 6. **Запустите сервисы:**
