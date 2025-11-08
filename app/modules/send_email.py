@@ -352,57 +352,17 @@ class EmailSender:
             )
             return "sent"
         except smtplib.SMTPAuthenticationError as exc:
-            if route.provider != "yandex":
-                LOGGER.error("Ошибка авторизации SMTP (%s): %s", _mask_email(normalized_email), exc)
-                metadata["route"]["error"] = str(exc)
-                self._update_status(
-                    session,
-                    outreach_id,
-                    status="failed",
-                    sent_at=None,
-                    last_error=str(exc),
-                    metadata=metadata,
-                )
-                return "failed"
-
-            LOGGER.warning(
-                "Авторизация Яндекс SMTP не удалась для %s: %s. Фолбэк на Gmail.",
-                _mask_email(normalized_email),
-                exc,
-            )
-            metadata["route"]["fallback"] = True
+            LOGGER.error("Ошибка авторизации SMTP (%s): %s", _mask_email(normalized_email), exc)
             metadata["route"]["error"] = str(exc)
-            metadata["route"]["provider"] = "gmail"
-
-            self._apply_headers(msg, self.gmail_settings, reply_to=None)
-
-            try:
-                self._send_via_channel(normalized_email, msg, self.gmail_settings)
-                self._update_status(
-                    session,
-                    outreach_id,
-                    status="sent",
-                    sent_at=datetime.now(timezone.utc),
-                    last_error=None,
-                    metadata=metadata,
-                )
-                return "sent"
-            except smtplib.SMTPException as fallback_exc:  # noqa: PERF203
-                metadata["route"]["error"] = str(fallback_exc)
-                self._update_status(
-                    session,
-                    outreach_id,
-                    status="failed",
-                    sent_at=None,
-                    last_error=str(fallback_exc),
-                    metadata=metadata,
-                )
-                LOGGER.error(
-                    "Фолбэк на Gmail для %s завершился ошибкой: %s",
-                    _mask_email(normalized_email),
-                    fallback_exc,
-                )
-                return "failed"
+            self._update_status(
+                session,
+                outreach_id,
+                status="failed",
+                sent_at=None,
+                last_error=str(exc),
+                metadata=metadata,
+            )
+            return "failed"
         except smtplib.SMTPException as exc:  # noqa: PERF203
             metadata["route"]["error"] = str(exc)
             self._update_status(

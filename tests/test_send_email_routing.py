@@ -133,7 +133,7 @@ def test_unknown_classification_defaults_to_gmail(monkeypatch: pytest.MonkeyPatc
     reset_settings_cache()
 
 
-def test_yandex_auth_failure_falls_back_to_gmail(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_yandex_auth_failure_reports_error(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
     reset_settings_cache()
     setup_yandex_env(monkeypatch)
@@ -151,11 +151,12 @@ def test_yandex_auth_failure_falls_back_to_gmail(monkeypatch: pytest.MonkeyPatch
 
     result = deliver_email(sender, session, to_email="lead@yandex.ru")
 
-    assert result == "sent"
-    assert send_mock.call_count == 2
+    assert result == "failed"
+    assert send_mock.call_count == 1
     status, metadata = parse_last_update(session)
-    assert metadata["route"]["provider"] == "gmail"
-    assert metadata["route"]["fallback"] is True
+    assert status == "failed"
+    assert metadata["route"]["provider"] == "yandex"
+    assert metadata["route"]["fallback"] is False
     assert "Auth failed" in metadata["route"]["error"]
 
     reset_settings_cache()
