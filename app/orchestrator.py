@@ -95,6 +95,29 @@ LIMIT :limit;
 """
 
 SELECT_CONTACTS_FOR_OUTREACH_SQL = """
+WITH locked_contacts AS (
+    SELECT ct.id, ct.first_seen_at
+    FROM contacts ct
+    JOIN companies c ON c.id = ct.company_id
+    WHERE ct.contact_type = 'email'
+      AND c.name IS NOT NULL AND c.name <> ''
+      AND c.attributes ->> 'homepage_excerpt' IS NOT NULL
+      AND c.attributes ->> 'homepage_excerpt' <> ''
+      AND NOT EXISTS (
+          SELECT 1
+          FROM outreach_messages om
+          WHERE om.contact_id = ct.id
+            AND om.status IN ('sent', 'scheduled')
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM opt_out_registry o
+          WHERE LOWER(o.contact_value) = LOWER(ct.value)
+      )
+    ORDER BY ct.first_seen_at
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
+)
 SELECT
     ct.id AS contact_id,
     ct.company_id,
@@ -103,19 +126,10 @@ SELECT
     c.canonical_domain,
     c.industry,
     c.attributes ->> 'homepage_excerpt' AS homepage_excerpt
-FROM contacts ct
+FROM locked_contacts lc
+JOIN contacts ct ON ct.id = lc.id
 JOIN companies c ON c.id = ct.company_id
-LEFT JOIN outreach_messages om ON om.contact_id = ct.id AND om.status IN ('sent', 'scheduled')
-LEFT JOIN opt_out_registry o ON LOWER(o.contact_value) = LOWER(ct.value)
-WHERE ct.contact_type = 'email'
-  AND om.id IS NULL
-  AND o.id IS NULL
-  AND c.name IS NOT NULL AND c.name <> ''
-  AND c.attributes ->> 'homepage_excerpt' IS NOT NULL
-  AND c.attributes ->> 'homepage_excerpt' <> ''
-ORDER BY ct.first_seen_at
-LIMIT :limit
-FOR UPDATE SKIP LOCKED;
+ORDER BY lc.first_seen_at;
 """
 
 SELECT_SERP_QUERY_DETAILS_SQL = """
