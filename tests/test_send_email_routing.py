@@ -78,7 +78,7 @@ def test_ru_classification_routes_to_yandex(monkeypatch: pytest.MonkeyPatch) -> 
     args = send_mock.call_args[0]
     assert args[2] == sender.yandex_settings
     message = args[1]
-    assert message["Reply-To"] == "Gmail Sender <leadgen@example.com>"
+    assert message["Reply-To"] is None
 
     status, metadata = parse_last_update(session)
     assert status == "sent"

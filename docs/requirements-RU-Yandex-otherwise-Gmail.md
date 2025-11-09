@@ -85,7 +85,7 @@ YANDEX_FROM="Марк Аборчи <mark***@yandex.ru>"
 6. Выбор канала: RU → yandex; OTHER|UNKNOWN → gmail.
    Если выбран yandex, но нет валидной авторизации → фолбэк на gmail (metadata.route.fallback=true).
 7. Заголовки:
-   — yandex: From=YANDEX_FROM; (опционально) Reply-To=GMAIL_FROM;
+   — yandex: From=YANDEX_FROM (ответы идут в этот же ящик);
    — gmail:  From=GMAIL_FROM.
 8. Отправка существующим SMTP-кодом (задержки/лимиты — без изменений).
 9. В metadata сохранить:

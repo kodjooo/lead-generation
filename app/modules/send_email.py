@@ -381,7 +381,7 @@ class EmailSender:
         mx_result = self.mx_router.classify(domain) if domain else MXResult("UNKNOWN", [], False)
         provider = "yandex" if mx_result.classification == "RU" else "gmail"
         channel = self.yandex_settings if provider == "yandex" else self.gmail_settings
-        reply_to = self.gmail_from_header if provider == "yandex" and self.gmail_from_header else None
+        reply_to: Optional[str] = None
         fallback = False
 
         if provider == "yandex" and not self._channel_configured(channel):
