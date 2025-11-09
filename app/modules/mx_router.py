@@ -75,6 +75,7 @@ class MXRouter:
         self._resolver = resolver
         self._resolvers_order = self._build_resolver_order(self.settings.dns_resolvers)
         self._ru_patterns = tuple(p.lower() for p in self.settings.ru_mx_patterns if p)
+        self._ru_tlds = tuple(t.lower().lstrip(".") for t in self.settings.ru_mx_tlds if t)
         self._force_ru_domains = {domain.lower() for domain in self.settings.force_ru_domains if domain}
 
     def classify(self, domain: str) -> MXResult:
@@ -121,6 +122,16 @@ class MXRouter:
             lowered = record.lower()
             if any(pattern in lowered for pattern in self._ru_patterns):
                 return True
+            if self._matches_ru_tld(lowered):
+                return True
+        return False
+
+    def _matches_ru_tld(self, hostname: str) -> bool:
+        if not self._ru_tlds:
+            return False
+        for tld in self._ru_tlds:
+            if hostname == tld or hostname.endswith(f".{tld}"):
+                return True
         return False
 
     def _resolve_mx(self, domain: str) -> List[str]:
@@ -166,4 +177,3 @@ class MXRouter:
         # Вторая попытка — системные настройки
         order.append(tuple())
         return order
-

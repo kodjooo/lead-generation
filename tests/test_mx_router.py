@@ -39,6 +39,7 @@ def routing_settings(**overrides) -> RoutingSettings:
         "dns_timeout_seconds": 0.5,
         "dns_resolvers": ("1.1.1.1", "8.8.8.8"),
         "ru_mx_patterns": ("mx.yandex.net", "mx.mail.ru"),
+        "ru_mx_tlds": (".ru",),
         "force_ru_domains": ("mail.ru",),
     }
     base.update(overrides)
@@ -84,3 +85,37 @@ def test_classification_returns_unknown_after_failures() -> None:
 
     assert result.classification == "UNKNOWN"
     assert result.records == []
+
+
+def test_detects_ru_by_tld() -> None:
+    responses = [
+        [SimpleNamespace(exchange="mail.company.ru.")],
+    ]
+    resolver = FakeResolver(responses=responses.copy())
+    router = MXRouter(
+        routing_settings(ru_mx_patterns=tuple(), ru_mx_tlds=(".ru", ".su")),
+        cache=TTLCache(60),
+        resolver=resolver,
+    )
+
+    result = router.classify("company.ru")
+
+    assert result.classification == "RU"
+    assert result.records == ["mail.company.ru"]
+
+
+def test_other_when_tld_not_matched() -> None:
+    responses = [
+        [SimpleNamespace(exchange="aspmx.l.google.com.")],
+    ]
+    resolver = FakeResolver(responses=responses.copy())
+    router = MXRouter(
+        routing_settings(ru_mx_patterns=tuple(), ru_mx_tlds=(".ru",)),
+        cache=TTLCache(60),
+        resolver=resolver,
+    )
+
+    result = router.classify("company.com")
+
+    assert result.classification == "OTHER"
+    assert result.records == ["aspmx.l.google.com"]

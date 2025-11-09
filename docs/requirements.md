@@ -308,7 +308,16 @@ ROUTING:
   MX_CACHE_TTL_HOURS=168
   DNS_TIMEOUT_MS=1500
   DNS_RESOLVERS=["1.1.1.1","8.8.8.8"]
-  RU_PATTERNS=["mx.yandex.net","mxs.mail.ru","mx1.mail.ru","mxs-cloud.mail.ru","mx.rambler.ru","mxs.rambler.ru"]
+  RU_PATTERNS=[
+    "1c.ru","aeroflot.ru","alfabank.ru","beeline.ru","beget.com","facct.email","facct.ru",
+    "gazprom.ru","gosuslugi.ru","hh.ru","kommersant.ru","lancloud.ru","lukoil.com","magnit.ru",
+    "mail.ru","masterhost.ru","mchost.ru","megafon.ru","mos.ru","mts.ru","netangels.ru","nornik.ru",
+    "novatek.ru","pochta.ru","proactivity.ru","rambler-co.ru","rambler.ru","rbc.ru","rosatom.ru",
+    "roscosmos.ru","rt.ru","runity.ru","russianpost.ru","sber.ru","sberbank.ru","selectel.org",
+    "sevstar.net","sovcombank.ru","sprinthost.ru","tatneft.ru","tbank.ru","timeweb.ru","vtb.ru",
+    "vtbcapital.ru","wildberries.ru","x5.ru","yandex.net","yandex.ru"
+  ]
+  RU_TLDS=[".ru",".su",".xn--p1ai",".xn--p1acf",".moscow",".moskva",".xn--80adxhks"]
   FORCE_RU_DOMAINS=["yandex.ru","mail.ru","bk.ru","inbox.ru","list.ru","rambler.ru"]
 
 GMAIL:

@@ -15,6 +15,7 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/1")
     monkeypatch.setenv("SMTP_HOST", "smtp.test")
     monkeypatch.setenv("SMTP_PORT", "2525")
+    monkeypatch.setenv("YANDEX_CLOUD_IAM_TOKEN", "test-token")
     monkeypatch.setenv("YANDEX_CLOUD_FOLDER_ID", "folder-test")
     monkeypatch.setenv("GMAIL_SMTP_HOST", "smtp.test")
     monkeypatch.setenv("GMAIL_SMTP_PORT", "2525")
@@ -32,6 +33,7 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     monkeypatch.setenv("ROUTING_DNS_TIMEOUT_MS", "2200")
     monkeypatch.setenv("ROUTING_DNS_RESOLVERS", "1.1.1.1,9.9.9.9")
     monkeypatch.setenv("ROUTING_RU_MX_PATTERNS", "mx.yandex.net,mx.mail.ru")
+    monkeypatch.setenv("ROUTING_RU_MX_TLDS", ".ru,.su")
     monkeypatch.setenv("ROUTING_FORCE_RU_DOMAINS", "mail.ru,rambler.ru")
 
     settings = get_settings()
@@ -59,6 +61,7 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     assert settings.routing.dns_timeout_seconds == 2.2
     assert settings.routing.dns_resolvers == ("1.1.1.1", "9.9.9.9")
     assert settings.routing.ru_mx_patterns == ("mx.yandex.net", "mx.mail.ru")
+    assert settings.routing.ru_mx_tlds == (".ru", ".su")
     assert settings.routing.force_ru_domains == ("mail.ru", "rambler.ru")
     assert settings.yandex_folder_id == "folder-test"
     assert settings.yandex_iam_token == "test-token"

@@ -36,7 +36,16 @@ ROUTING_DNS_TIMEOUT_MS=1500
 ROUTING_DNS_RESOLVERS="1.1.1.1,8.8.8.8"
 
 # Подстроки для распознавания российских MX
-ROUTING_RU_MX_PATTERNS="mx.yandex.net,mxs.mail.ru,mx1.mail.ru,mxs-cloud.mail.ru,mx.rambler.ru,mxs.rambler.ru"
+ROUTING_RU_MX_PATTERNS="1c.ru,aeroflot.ru,alfabank.ru,beeline.ru,beget.com,facct.email,facct.ru,gazprom.ru,gosuslugi.ru,hh.ru,kommersant.ru,lancloud.ru,lukoil.com,magnit.ru,mail.ru,masterhost.ru,mchost.ru,megafon.ru,mos.ru,mts.ru,netangels.ru,nornik.ru,novatek.ru,pochta.ru,proactivity.ru,rambler-co.ru,rambler.ru,rbc.ru,rosatom.ru,roscosmos.ru,rt.ru,runity.ru,russianpost.ru,sber.ru,sberbank.ru,selectel.org,sevstar.net,sovcombank.ru,sprinthost.ru,tatneft.ru,tbank.ru,timeweb.ru,vtb.ru,vtbcapital.ru,wildberries.ru,x5.ru,yandex.net,yandex.ru"
+
+# Расширенная эвристика: если MX заканчивается на один из доменов ниже, считаем его российским (punycode)
+ROUTING_RU_MX_TLDS=".ru,.su,.xn--p1ai,.xn--p1acf,.moscow,.moskva,.xn--80adxhks"
+
+> Обновить список паттернов можно скриптом `scripts/discover_ru_mx.py`, который опрашивает MX популярных российских доменов (банки, маркетплейсы, медиа, хостинг-провайдеры) и печатает готовый CSV:
+> ```bash
+> docker compose run --rm app python scripts/discover_ru_mx.py
+> ```
+> Скрипт выводит JSON `mx_host -> [domains]` и перечень базовых доменов; последний блок копируем в `ROUTING_RU_MX_PATTERNS`.
 
 # Домены-получатели, которые считаем RU без DNS
 ROUTING_FORCE_RU_DOMAINS="yandex.ru,yandex.com,mail.ru,bk.ru,inbox.ru,list.ru,rambler.ru"
@@ -71,6 +80,7 @@ YANDEX_FROM="Марк Аборчи <mark***@yandex.ru>"
 5. Классификация:
    — если домен получателя входит в ROUTING_FORCE_RU_DOMAINS → class=RU;
    — иначе если любая MX содержит подстроку из ROUTING_RU_MX_PATTERNS → class=RU;
+   — иначе если MX заканчивается на TLD из ROUTING_RU_MX_TLDS (например, `.ru`, `.su`, `xn--p1ai`) → class=RU;
    — иначе → class=OTHER.
 6. Выбор канала: RU → yandex; OTHER|UNKNOWN → gmail.
    Если выбран yandex, но нет валидной авторизации → фолбэк на gmail (metadata.route.fallback=true).

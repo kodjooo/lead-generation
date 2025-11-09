@@ -8,6 +8,66 @@ from email.utils import parseaddr
 from functools import lru_cache
 from typing import List, Sequence, Tuple
 
+DEFAULT_RU_MX_PATTERNS: Tuple[str, ...] = (
+    "1c.ru",
+    "aeroflot.ru",
+    "alfabank.ru",
+    "beeline.ru",
+    "beget.com",
+    "facct.email",
+    "facct.ru",
+    "gazprom.ru",
+    "gosuslugi.ru",
+    "hh.ru",
+    "kommersant.ru",
+    "lancloud.ru",
+    "lukoil.com",
+    "magnit.ru",
+    "mail.ru",
+    "masterhost.ru",
+    "mchost.ru",
+    "megafon.ru",
+    "mos.ru",
+    "mts.ru",
+    "netangels.ru",
+    "nornik.ru",
+    "novatek.ru",
+    "pochta.ru",
+    "proactivity.ru",
+    "rambler-co.ru",
+    "rambler.ru",
+    "rbc.ru",
+    "rosatom.ru",
+    "roscosmos.ru",
+    "rt.ru",
+    "runity.ru",
+    "russianpost.ru",
+    "sber.ru",
+    "sberbank.ru",
+    "selectel.org",
+    "sevstar.net",
+    "sovcombank.ru",
+    "sprinthost.ru",
+    "tatneft.ru",
+    "tbank.ru",
+    "timeweb.ru",
+    "vtb.ru",
+    "vtbcapital.ru",
+    "wildberries.ru",
+    "x5.ru",
+    "yandex.net",
+    "yandex.ru",
+)
+
+DEFAULT_RU_MX_TLDS: Tuple[str, ...] = (
+    ".ru",
+    ".su",
+    ".xn--p1ai",  # .рф
+    ".xn--p1acf",  # .рус
+    ".moscow",
+    ".moskva",
+    ".xn--80adxhks",  # .москва
+)
 
 @dataclass(frozen=True)
 class DatabaseSettings:
@@ -56,6 +116,7 @@ class RoutingSettings:
     dns_timeout_seconds: float
     dns_resolvers: Tuple[str, ...]
     ru_mx_patterns: Tuple[str, ...]
+    ru_mx_tlds: Tuple[str, ...]
     force_ru_domains: Tuple[str, ...]
 
 
@@ -193,14 +254,8 @@ def get_settings() -> Settings:
         mx_cache_ttl_hours=int(_env("ROUTING_MX_CACHE_TTL_HOURS", "168")),
         dns_timeout_seconds=max(int(_env("ROUTING_DNS_TIMEOUT_MS", "1500")) / 1000.0, 0.1),
         dns_resolvers=tuple(_env_list("ROUTING_DNS_RESOLVERS", ["1.1.1.1", "8.8.8.8"])),
-        ru_mx_patterns=tuple(_env_list("ROUTING_RU_MX_PATTERNS", [
-            "mx.yandex.net",
-            "mxs.mail.ru",
-            "mx1.mail.ru",
-            "mxs-cloud.mail.ru",
-            "mx.rambler.ru",
-            "mxs.rambler.ru",
-        ])),
+        ru_mx_patterns=tuple(_env_list("ROUTING_RU_MX_PATTERNS", list(DEFAULT_RU_MX_PATTERNS))),
+        ru_mx_tlds=tuple(_env_list("ROUTING_RU_MX_TLDS", list(DEFAULT_RU_MX_TLDS))),
         force_ru_domains=tuple(_env_list("ROUTING_FORCE_RU_DOMAINS", [
             "yandex.ru",
             "yandex.com",

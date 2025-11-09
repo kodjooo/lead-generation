@@ -219,7 +219,10 @@ docker compose run --rm app --mode once
 
 ### Email и OpenAI
 
-- `ROUTING_ENABLED`, `ROUTING_MX_CACHE_TTL_HOURS`, `ROUTING_DNS_TIMEOUT_MS`, `ROUTING_DNS_RESOLVERS`, `ROUTING_RU_MX_PATTERNS`, `ROUTING_FORCE_RU_DOMAINS` — параметры MX-маршрутизации (см. `docs/requirements-RU-Yandex-otherwise-Gmail.md`).
+- `ROUTING_ENABLED`, `ROUTING_MX_CACHE_TTL_HOURS`, `ROUTING_DNS_TIMEOUT_MS`, `ROUTING_DNS_RESOLVERS`, `ROUTING_RU_MX_PATTERNS`, `ROUTING_RU_MX_TLDS`, `ROUTING_FORCE_RU_DOMAINS` — параметры MX-маршрутизации (см. `docs/requirements-RU-Yandex-otherwise-Gmail.md`). Список паттернов можно пересобрать скриптом:
+  ```bash
+  docker compose run --rm app python scripts/discover_ru_mx.py
+  ```
 - `GMAIL_SMTP_HOST`, `GMAIL_SMTP_PORT`, `GMAIL_SMTP_TLS`, `GMAIL_USER`, `GMAIL_PASS`, `GMAIL_FROM` — отправка через Gmail (App Password из Google Account → Security → App Passwords).
 - `YANDEX_SMTP_HOST`, `YANDEX_SMTP_PORT`, `YANDEX_SMTP_SSL`, `YANDEX_USER`, `YANDEX_PASS`, `YANDEX_FROM` — отправка через личный аккаунт Яндекс (пароль приложения в mail.yandex.ru → Настройки → Пароли приложений). Если канал не используется, оставьте значения пустыми.
 - `EMAIL_SENDING_ENABLED` — если `false`, письма только сохраняются в `outreach_messages` со статусом `scheduled`, реальная отправка отключена.
