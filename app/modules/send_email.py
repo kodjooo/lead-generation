@@ -85,6 +85,8 @@ RETURNING id;
 
 SEND_WINDOW_START = time(9, 10)
 SEND_WINDOW_END = time(19, 45)
+MIN_SEND_DELAY_SECONDS = 9 * 60
+MAX_SEND_DELAY_SECONDS = 16 * 60
 
 
 @dataclass
@@ -335,7 +337,7 @@ class EmailSender:
         }
 
         try:
-            self._send_via_channel(normalized_email, msg, route.channel)
+            route = self._deliver_with_fallback(normalized_email, msg, route, metadata)
             self._update_status(
                 session,
                 outreach_id,
@@ -413,6 +415,78 @@ class EmailSender:
         message["From"] = self._build_from_header(channel)
         if reply_to:
             message["Reply-To"] = reply_to
+
+    def _deliver_with_fallback(
+        self,
+        to_email: str,
+        message: EmailMessage,
+        route: RouteContext,
+        metadata: Dict[str, object],
+    ) -> RouteContext:
+        try:
+            self._send_via_channel(to_email, message, route.channel)
+            return route
+        except smtplib.SMTPAuthenticationError:
+            raise
+        except smtplib.SMTPException as exc:
+            if self._should_fallback_to_gmail(route, exc):
+                error_text = self._extract_smtp_error_text(exc)
+                metadata["route"]["error"] = error_text
+                fallback_route = self._build_gmail_route(route.mx_result)
+                LOGGER.warning(
+                    "Яндекс отклонил письмо %s как спам (%s). Переключаемся на Gmail.",
+                    _mask_email(to_email),
+                    error_text,
+                )
+                self._apply_headers(message, fallback_route.channel, reply_to=fallback_route.reply_to)
+                try:
+                    self._send_via_channel(to_email, message, fallback_route.channel)
+                except smtplib.SMTPException as fallback_exc:
+                    fallback_error = self._extract_smtp_error_text(fallback_exc)
+                    metadata["route"]["error"] = f"{error_text} | fallback_failed: {fallback_error}"
+                    raise
+                else:
+                    metadata["route"]["provider"] = fallback_route.provider
+                    metadata["route"]["fallback"] = True
+                    return fallback_route
+            metadata["route"]["error"] = self._extract_smtp_error_text(exc)
+            raise
+
+    def _should_fallback_to_gmail(self, route: RouteContext, error: Exception) -> bool:
+        if route.provider != "yandex" or route.fallback:
+            return False
+        if not self._channel_configured(self.gmail_settings):
+            return False
+        error_text = self._extract_smtp_error_text(error).lower()
+        if not error_text:
+            return False
+        spam_tokens = (
+            "5.7.1",
+            "5.7.0",
+            "suspected spam",
+            "suspicion of spam",
+            "message rejected",
+            "under suspicion of spam",
+        )
+        return any(token in error_text for token in spam_tokens)
+
+    @staticmethod
+    def _extract_smtp_error_text(error: Exception) -> str:
+        if isinstance(error, smtplib.SMTPResponseException):
+            raw = error.smtp_error
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8", "ignore")
+            return str(raw)
+        return str(error)
+
+    def _build_gmail_route(self, mx_result: MXResult) -> RouteContext:
+        return RouteContext(
+            provider="gmail",
+            channel=self.gmail_settings,
+            mx_result=mx_result,
+            reply_to=None,
+            fallback=True,
+        )
 
     @staticmethod
     def _channel_configured(channel: SMTPChannelSettings) -> bool:
@@ -557,7 +631,7 @@ class EmailSender:
         else:
             anchor = local_now
 
-        delay_seconds = random.randint(240, 480)
+        delay_seconds = random.randint(MIN_SEND_DELAY_SECONDS, MAX_SEND_DELAY_SECONDS)
         scheduled_local = self._pick_time_within_window(anchor, delay_seconds)
         return scheduled_local.astimezone(timezone.utc)
 
@@ -579,7 +653,7 @@ class EmailSender:
             next_day = base.date() + timedelta(days=1)
             base = datetime.combine(next_day, SEND_WINDOW_START, tzinfo=self._tz)
             window_end = datetime.combine(next_day, SEND_WINDOW_END, tzinfo=self._tz)
-            candidate = base + timedelta(seconds=random.randint(240, 480))
+            candidate = base + timedelta(seconds=random.randint(MIN_SEND_DELAY_SECONDS, MAX_SEND_DELAY_SECONDS))
 
         return candidate
 

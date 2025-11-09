@@ -160,3 +160,37 @@ def test_yandex_auth_failure_reports_error(monkeypatch: pytest.MonkeyPatch) -> N
     assert "Auth failed" in metadata["route"]["error"]
 
     reset_settings_cache()
+
+
+def test_yandex_spam_rejection_fallbacks_to_gmail(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+    setup_yandex_env(monkeypatch)
+
+    sender = prepare_sender(monkeypatch, session)
+    sender.mx_router.classify.return_value = MXResult("RU", ["mx.yandex.net"], False)
+
+    call_state = {"count": 0}
+
+    def send_side_effect(to_email, message, channel):  # noqa: ANN001
+        call_state["count"] += 1
+        if call_state["count"] == 1:
+            assert channel == sender.yandex_settings
+            raise smtplib.SMTPDataError(554, b"5.7.1 Message rejected under suspicion of SPAM")
+        assert channel == sender.gmail_settings
+        return None
+
+    send_mock = MagicMock(side_effect=send_side_effect)
+    monkeypatch.setattr(sender, "_send_via_channel", send_mock)
+
+    result = deliver_email(sender, session, to_email="lead@yandex.ru")
+
+    assert result == "sent"
+    assert send_mock.call_count == 2
+    status, metadata = parse_last_update(session)
+    assert status == "sent"
+    assert metadata["route"]["provider"] == "gmail"
+    assert metadata["route"]["fallback"] is True
+    assert "5.7.1" in metadata["route"]["error"]
+
+    reset_settings_cache()

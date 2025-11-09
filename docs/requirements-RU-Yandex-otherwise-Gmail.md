@@ -28,6 +28,7 @@
 — RU → provider=yandex; иначе → provider=gmail.
 — DNS timeout/NXDOMAIN → 1 ретрай; если снова ошибка → class=UNKNOWN, provider=gmail.
 — Нет/ошибка авторизации Яндекс SMTP → фолбэк на gmail с metadata.route.fallback=true и warning в лог.
+— Если Яндекс вернул код 5.7.x (подозрение на спам) → автоматически пробуем отправить через Gmail, фиксируя ошибку в `metadata.route.error`.
 
 4) Конфигурация (.env / config.py)
 ROUTING_ENABLED=true
@@ -84,6 +85,7 @@ YANDEX_FROM="Марк Аборчи <mark***@yandex.ru>"
    — иначе → class=OTHER.
 6. Выбор канала: RU → yandex; OTHER|UNKNOWN → gmail.
    Если выбран yandex, но нет валидной авторизации → фолбэк на gmail (metadata.route.fallback=true).
+   Если Яндекс вернул 5.7.x (подозрение на спам) → сразу повторяем через Gmail, сохраняя текст ошибки в metadata.
 7. Заголовки:
    — yandex: From=YANDEX_FROM (ответы идут в этот же ящик);
    — gmail:  From=GMAIL_FROM.

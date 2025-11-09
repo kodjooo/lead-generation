@@ -109,7 +109,7 @@ services:
   session = get_session_factory()()
   rows = session.execute(text("SELECT id FROM outreach_messages WHERE status='scheduled' ORDER BY created_at"))
   for row in rows.mappings():
-      current += timedelta(seconds=random.randint(240, 480))
+      current += timedelta(seconds=random.randint(540, 960))
       session.execute(text("UPDATE outreach_messages SET scheduled_for = :ts WHERE id = :id"),
                       {"ts": current.astimezone(timezone.utc), "id": row["id"]})
   session.commit()
@@ -143,6 +143,7 @@ services:
 3. Убедитесь, что письма на Яндекс/Мейл.ру ушли через Яндекс SMTP (`metadata.route.provider = "yandex"`, заголовок `From` совпадает с `YANDEX_FROM`, `Reply-To` отсутствует — ответы пойдут в этот же ящик).
 4. Проверьте, что письма на остальные домены и адрес с ошибкой DNS отправлены через Gmail с `metadata.mx.class = "OTHER"`/`"UNKNOWN"`.
 5. Протестируйте случай с неверным паролем приложения Яндекса: временно измените `YANDEX_PASS`, перезапустите доставку и убедитесь, что письмо не отправилось (статус `failed`, `metadata.route.error` содержит ответ SMTP).
+6. Если во время отправки через Яндекс приходит ошибка вида `5.7.x Message rejected under suspicion of SPAM`, сервис автоматически переключится на Gmail (`metadata.route.provider = "gmail"`, `metadata.route.fallback = true`) и сохранит текст ошибки в `metadata.route.error`.
 
 ## Деплой на удалённом сервере через Git
 
