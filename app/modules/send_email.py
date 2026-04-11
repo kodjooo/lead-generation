@@ -365,6 +365,18 @@ class EmailSender:
                 metadata=metadata,
             )
             return "failed"
+        except OSError as exc:
+            metadata["route"]["error"] = str(exc)
+            self._update_status(
+                session,
+                outreach_id,
+                status="failed",
+                sent_at=None,
+                last_error=str(exc),
+                metadata=metadata,
+            )
+            LOGGER.error("Сетевая ошибка отправки письма (%s): %s", _mask_email(normalized_email), exc)
+            return "failed"
         except smtplib.SMTPException as exc:  # noqa: PERF203
             metadata["route"]["error"] = str(exc)
             self._update_status(

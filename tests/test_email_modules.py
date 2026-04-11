@@ -258,6 +258,35 @@ def test_email_sender_queue_skips_invalid_email(monkeypatch: pytest.MonkeyPatch)
     diff_seconds = (scheduled[-1] - scheduled[-2]).total_seconds()
     assert diff_seconds == pytest.approx(300.0, abs=1.0)
 
+
+def test_email_sender_marks_failed_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+
+    sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    monkeypatch.setattr(sender, "_prepare_route", lambda email: MagicMock(provider="gmail", channel=MagicMock(), mx_result=MXResult("OTHER", [], False), reply_to=None, fallback=False))
+    monkeypatch.setattr(sender, "_make_message_id", lambda channel: "<test-message-id>")
+    monkeypatch.setattr(sender, "_apply_headers", lambda message, channel, reply_to=None: None)
+    monkeypatch.setattr(sender, "_send_via_channel", lambda to_email, message, channel: (_ for _ in ()).throw(OSError(101, "Network is unreachable")))
+
+    result = sender.deliver(
+        outreach_id="outreach-1",
+        company_id="company-1",
+        contact_id="contact-1",
+        to_email="hello@example.com",
+        subject="Тест",
+        body="Тестовое письмо",
+        session=session,
+    )
+
+    assert result == "failed"
+    sql, params = session.calls[-1]
+    assert "UPDATE outreach_messages" in sql
+    assert params["status"] == "failed"
+    assert "Network is unreachable" in params["last_error"]
+
+    reset_settings_cache()
+
     reset_settings_cache()
 
 
