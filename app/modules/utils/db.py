@@ -15,6 +15,7 @@ from app.config import DatabaseSettings, get_settings
 
 LOGGER = logging.getLogger("app.db")
 DEFAULT_MIGRATIONS_PATH = Path(__file__).resolve().parents[3] / "migrations"
+MIGRATIONS_ADVISORY_LOCK_ID = 485902143271
 
 
 def build_sync_dsn(db_settings: DatabaseSettings) -> str:
@@ -106,3 +107,25 @@ def run_sql_migrations(
 
     return applied
 
+
+def bootstrap_database(engine: Engine | None = None) -> list[str]:
+    """Применяет миграции под advisory lock, чтобы избежать гонок при старте контейнеров."""
+    eng = engine or create_engine_from_settings()
+    with eng.connect() as connection:
+        LOGGER.info("Ожидание блокировки миграций БД.")
+        connection.execute(
+            text("SELECT pg_advisory_lock(:lock_id)"),
+            {"lock_id": MIGRATIONS_ADVISORY_LOCK_ID},
+        )
+        try:
+            applied = run_sql_migrations(engine=connection.engine)
+            if applied:
+                LOGGER.info("Миграции применены: %s", ", ".join(applied))
+            else:
+                LOGGER.info("Новых миграций нет.")
+            return applied
+        finally:
+            connection.execute(
+                text("SELECT pg_advisory_unlock(:lock_id)"),
+                {"lock_id": MIGRATIONS_ADVISORY_LOCK_ID},
+            )

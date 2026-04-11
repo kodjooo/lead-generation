@@ -3,6 +3,7 @@
 import logging
 import time
 
+from app.modules.utils.db import bootstrap_database
 from app.orchestrator import PipelineOrchestrator
 
 LOGGER = logging.getLogger("app.worker")
@@ -13,6 +14,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
     )
+    bootstrap_database()
     orchestrator = PipelineOrchestrator()
     LOGGER.info("Воркер запущен.")
 

@@ -3,6 +3,7 @@
 import argparse
 import logging
 
+from app.modules.utils.db import bootstrap_database
 from app.orchestrator import OrchestratorConfig, PipelineOrchestrator
 
 
@@ -34,6 +35,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
     )
+    bootstrap_database()
 
     orchestrator = PipelineOrchestrator(
         OrchestratorConfig(

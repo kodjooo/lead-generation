@@ -3,6 +3,7 @@
 import logging
 import time
 
+from app.modules.utils.db import bootstrap_database
 from app.modules.yandex_deferred import NightWindowViolation
 from app.orchestrator import PipelineOrchestrator
 
@@ -14,6 +15,7 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s :: %(message)s",
     )
+    bootstrap_database()
     orchestrator = PipelineOrchestrator()
     LOGGER.info("Планировщик готов к созданию deferred-запросов.")
 
