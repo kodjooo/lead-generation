@@ -93,10 +93,13 @@ SELECT_COMPANIES_WITHOUT_CONTACTS_SQL = """
 WITH candidates AS (
     SELECT c.id
     FROM companies c
-    LEFT JOIN contacts ct ON ct.company_id = c.id
-    WHERE ct.id IS NULL
-      AND c.canonical_domain IS NOT NULL
+    WHERE c.canonical_domain IS NOT NULL
       AND c.status IN ('new', 'contacts_not_found')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM contacts ct
+          WHERE ct.company_id = c.id
+      )
     ORDER BY c.created_at
     FOR UPDATE SKIP LOCKED
     LIMIT :limit
