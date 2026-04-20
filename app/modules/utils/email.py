@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from email.utils import parseaddr
+from urllib.parse import unquote
 
 EMAIL_REGEX = re.compile(
     r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
@@ -25,6 +26,7 @@ def clean_email(value: str) -> str:
         raw = raw.split(":", 1)[1]
     if "?" in raw:
         raw = raw.split("?", 1)[0]
+    raw = unquote(raw)
 
     _, parsed = parseaddr(raw)
     candidate = parsed or raw

@@ -35,6 +35,9 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     monkeypatch.setenv("ROUTING_RU_MX_PATTERNS", "mx.yandex.net,mx.mail.ru")
     monkeypatch.setenv("ROUTING_RU_MX_TLDS", ".ru,.su")
     monkeypatch.setenv("ROUTING_FORCE_RU_DOMAINS", "mail.ru,rambler.ru")
+    monkeypatch.setenv("ENRICH_TIMEOUT_SECONDS", "4.5")
+    monkeypatch.setenv("ENRICH_MAX_REDIRECTS", "3")
+    monkeypatch.setenv("ENRICH_PROXY_URL", "http://proxy1.local:8080,http://proxy2.local:8080")
 
     settings = get_settings()
 
@@ -63,6 +66,9 @@ def test_settings_loaded_from_env(monkeypatch) -> None:
     assert settings.routing.ru_mx_patterns == ("mx.yandex.net", "mx.mail.ru")
     assert settings.routing.ru_mx_tlds == (".ru", ".su")
     assert settings.routing.force_ru_domains == ("mail.ru", "rambler.ru")
+    assert settings.enrichment.timeout_seconds == 4.5
+    assert settings.enrichment.max_redirects == 3
+    assert settings.enrichment.proxy_urls == ("http://proxy1.local:8080", "http://proxy2.local:8080")
     assert settings.yandex_folder_id == "folder-test"
     assert settings.yandex_iam_token == "test-token"
 

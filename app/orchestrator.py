@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.modules.deduplicate import DeduplicationService
 from app.modules.enrich_contacts import ContactEnricher
-from app.modules.generate_email_gpt import CompanyBrief, ContactBrief, EmailGenerator, OfferBrief
+from app.modules.generate_email_gpt import (
+    CompanyBrief,
+    ContactBrief,
+    EmailGenerationError,
+    EmailGenerator,
+    OfferBrief,
+)
 from app.modules.send_email import EmailSender
 from app.modules.serp_ingest import SerpIngestService
 from app.modules.utils.db import get_session_factory, session_scope
@@ -84,14 +90,23 @@ WHERE id = :operation_id;
 """
 
 SELECT_COMPANIES_WITHOUT_CONTACTS_SQL = """
-SELECT c.id, c.canonical_domain
-FROM companies c
-LEFT JOIN contacts ct ON ct.company_id = c.id
-WHERE ct.id IS NULL
-  AND c.canonical_domain IS NOT NULL
-  AND c.status <> 'contacts_not_found'
-ORDER BY c.created_at
-LIMIT :limit;
+WITH candidates AS (
+    SELECT c.id
+    FROM companies c
+    LEFT JOIN contacts ct ON ct.company_id = c.id
+    WHERE ct.id IS NULL
+      AND c.canonical_domain IS NOT NULL
+      AND c.status = 'new'
+    ORDER BY c.created_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT :limit
+)
+UPDATE companies c
+SET status = 'contacts_processing',
+    updated_at = NOW()
+FROM candidates
+WHERE c.id = candidates.id
+RETURNING c.id, c.canonical_domain;
 """
 
 SELECT_CONTACTS_FOR_OUTREACH_SQL = """
@@ -100,6 +115,7 @@ WITH locked_contacts AS (
     FROM contacts ct
     JOIN companies c ON c.id = ct.company_id
     WHERE ct.contact_type = 'email'
+      AND ct.is_primary = TRUE
       AND c.name IS NOT NULL AND c.name <> ''
       AND c.attributes ->> 'homepage_excerpt' IS NOT NULL
       AND c.attributes ->> 'homepage_excerpt' <> ''
@@ -107,7 +123,7 @@ WITH locked_contacts AS (
           SELECT 1
           FROM outreach_messages om
           WHERE om.contact_id = ct.id
-            AND om.status IN ('sent', 'scheduled')
+            AND om.status IN ('sent', 'scheduled', 'failed')
       )
       AND NOT EXISTS (
           SELECT 1
@@ -418,13 +434,27 @@ class PipelineOrchestrator:
                 if not canonical_domain:
                     LOGGER.debug("У компании %s отсутствует canonical_domain, пропускаем обогащение.", row["id"])
                     continue
-                inserted = self.contact_enricher.enrich_company(
-                    company_id=str(row["id"]),
-                    canonical_domain=canonical_domain,
-                    session=session,
-                )
-                if inserted:
-                    count += 1
+                try:
+                    inserted = self.contact_enricher.enrich_company(
+                        company_id=str(row["id"]),
+                        canonical_domain=canonical_domain,
+                        session=session,
+                    )
+                    if inserted:
+                        count += 1
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.exception("Ошибка enrichment компании %s: %s", row["id"], exc)
+                    session.execute(
+                        text(
+                            """
+                            UPDATE companies
+                            SET status = 'new',
+                                updated_at = NOW()
+                            WHERE id = :id AND status = 'contacts_processing'
+                            """
+                        ),
+                        {"id": row["id"]},
+                    )
             return count
 
     def _generate_and_send_emails(self) -> tuple[int, int]:
@@ -449,16 +479,32 @@ class PipelineOrchestrator:
                     highlights=[row["homepage_excerpt"]] if row["homepage_excerpt"] else [],
                 )
                 contact = ContactBrief(emails=[row["value"]])
-                generated = self.email_generator.generate(company, self.offer, contact)
-                self.email_sender.queue(
-                    company_id=row["company_id"],
-                    contact_id=row["contact_id"],
-                    to_email=row["value"],
-                    template=generated.template,
-                    request_payload=generated.request_payload,
-                    session=session,
-                )
-                queued += 1
+                try:
+                    generated = self.email_generator.generate(company, self.offer, contact)
+                    self.email_sender.queue(
+                        company_id=row["company_id"],
+                        contact_id=row["contact_id"],
+                        to_email=row["value"],
+                        template=generated.template,
+                        request_payload=generated.request_payload,
+                        session=session,
+                    )
+                    queued += 1
+                except EmailGenerationError as exc:
+                    LOGGER.error(
+                        "Не удалось сгенерировать письмо для company=%s contact=%s: %s",
+                        row["company_id"],
+                        row["contact_id"],
+                        exc,
+                    )
+                    self.email_sender.record_generation_failed(
+                        company_id=row["company_id"],
+                        contact_id=row["contact_id"],
+                        to_email=row["value"],
+                        error=str(exc),
+                        request_payload=None,
+                        session=session,
+                    )
             return queued
 
     def _send_scheduled_emails(self) -> int:

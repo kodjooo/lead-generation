@@ -209,6 +209,7 @@ docker compose run --rm app --mode once
 - `YANDEX_SMTP_HOST`, `YANDEX_SMTP_PORT`, `YANDEX_SMTP_TLS`, `YANDEX_SMTP_SSL`, `YANDEX_USER`, `YANDEX_PASS`, `YANDEX_FROM` — отправка через личный аккаунт Яндекс (пароль приложения в mail.yandex.ru → Настройки → Пароли приложений). Для серверов, где порт `465` недоступен, используйте `587` + `STARTTLS`.
 - `EMAIL_SENDING_ENABLED` — если `false`, письма только сохраняются в `outreach_messages` со статусом `scheduled`, реальная отправка отключена.
 - `OPENAI_API_KEY` — ключ OpenAI для генерации персонализированных писем.
+- `ENRICH_TIMEOUT_SECONDS`, `ENRICH_MAX_REDIRECTS`, `ENRICH_PROXY_URL` — параметры обхода сайтов при поиске контактов. Используйте прокси, если часть доменов недоступна с сервера; уменьшенный таймаут и лимит редиректов помогают быстрее разбирать backlog.
 
 ## Синхронизация запросов из Google Sheets
 

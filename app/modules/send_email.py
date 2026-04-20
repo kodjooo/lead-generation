@@ -55,6 +55,34 @@ VALUES (
 RETURNING id;
 """
 
+INSERT_FAILED_OUTREACH_SQL = """
+INSERT INTO outreach_messages (
+    company_id,
+    contact_id,
+    channel,
+    subject,
+    body,
+    status,
+    scheduled_for,
+    sent_at,
+    last_error,
+    metadata
+)
+VALUES (
+    :company_id,
+    :contact_id,
+    'email',
+    :subject,
+    :body,
+    'failed',
+    NULL,
+    NULL,
+    :last_error,
+    CAST(:metadata AS JSONB)
+)
+RETURNING id;
+"""
+
 CHECK_OPT_OUT_SQL = """
 SELECT 1 FROM opt_out_registry
 WHERE LOWER(contact_value) = LOWER(:contact_value)
@@ -80,6 +108,15 @@ SET status = :status,
     metadata = metadata || CAST(:metadata AS JSONB),
     updated_at = NOW()
 WHERE id = :id
+RETURNING id;
+"""
+
+CLAIM_OUTREACH_SQL = """
+UPDATE outreach_messages
+SET status = 'sending',
+    updated_at = NOW()
+WHERE id = :id
+  AND status = 'scheduled'
 RETURNING id;
 """
 
@@ -192,6 +229,37 @@ class EmailSender:
                 scheduled_for,
             )
 
+    def record_generation_failed(
+        self,
+        *,
+        company_id: str,
+        contact_id: Optional[str],
+        to_email: str,
+        error: str,
+        request_payload: Optional[Dict[str, object]] = None,
+        session: Optional[Session] = None,
+    ) -> str:
+        """Фиксирует неуспешную генерацию письма без постановки в отправку."""
+        if session is not None:
+            return self._record_generation_failed_with_session(
+                session,
+                company_id,
+                contact_id,
+                to_email,
+                error,
+                request_payload,
+            )
+
+        with session_scope(self.session_factory) as scoped_session:
+            return self._record_generation_failed_with_session(
+                scoped_session,
+                company_id,
+                contact_id,
+                to_email,
+                error,
+                request_payload,
+            )
+
     def _queue_with_session(
         self,
         session: Session,
@@ -241,6 +309,36 @@ class EmailSender:
             metadata=metadata,
         )
 
+    def _record_generation_failed_with_session(
+        self,
+        session: Session,
+        company_id: str,
+        contact_id: Optional[str],
+        to_email: str,
+        error: str,
+        request_payload: Optional[Dict[str, object]],
+    ) -> str:
+        normalized_email = clean_email(to_email)
+        metadata: Dict[str, object] = {
+            "to_email": normalized_email or to_email,
+            "to_email_raw": to_email,
+            "reason": "generation_failed",
+        }
+        if request_payload is not None:
+            metadata["llm_request"] = request_payload
+        result = session.execute(
+            text(INSERT_FAILED_OUTREACH_SQL),
+            {
+                "company_id": company_id,
+                "contact_id": contact_id,
+                "subject": "Генерация письма не удалась",
+                "body": "Генерация письма не удалась после повторных попыток.",
+                "last_error": error,
+                "metadata": json.dumps(metadata),
+            },
+        )
+        return str(result.scalar_one())
+
     def deliver(
         self,
         *,
@@ -279,6 +377,12 @@ class EmailSender:
         body: str,
     ) -> str:
         normalized_email = clean_email(to_email)
+        if not self._claim_outreach(session, outreach_id):
+            LOGGER.warning(
+                "Outreach %s не был захвачен для отправки, пропускаем повтор.",
+                outreach_id,
+            )
+            return "skipped"
         if not is_valid_email(normalized_email):
             LOGGER.warning(
                 "Outreach %s пропущен — email '%s' не проходит валидацию.",
@@ -389,6 +493,10 @@ class EmailSender:
             )
             LOGGER.error("Ошибка отправки письма (%s): %s", _mask_email(normalized_email), exc)
             return "failed"
+
+    def _claim_outreach(self, session: Session, outreach_id: str) -> bool:
+        result = session.execute(text(CLAIM_OUTREACH_SQL), {"id": outreach_id})
+        return result.first() is not None
 
     def _prepare_route(self, to_email: str) -> RouteContext:
         domain = self._extract_domain(to_email)

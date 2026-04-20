@@ -10,7 +10,7 @@ import pytest
 import respx
 
 from app.config import get_settings
-from app.modules.generate_email_gpt import CompanyBrief, EmailGenerator, OfferBrief
+from app.modules.generate_email_gpt import CompanyBrief, EmailGenerationError, EmailGenerator, EmailTemplate, OfferBrief
 from app.modules.send_email import EmailSender
 from app.modules.mx_router import MXResult
 
@@ -94,7 +94,7 @@ def reset_settings_cache() -> None:
     get_settings.cache_clear()  # type: ignore[attr-defined]
 
 
-def test_email_generator_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_email_generator_raises_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENAI_API_KEY", "")
 
@@ -102,12 +102,59 @@ def test_email_generator_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     company = CompanyBrief(name="Test", domain="test.ru")
     offer = OfferBrief(pains=["Долгий поиск лидов"], value_proposition="Автоматизируем холодный аутрич")
 
-    generated = generator.generate(company, offer)
+    with pytest.raises(EmailGenerationError, match="OPENAI_API_KEY"):
+        generator.generate(company, offer)
 
-    assert generated.used_fallback is True
-    assert generated.request_payload is None
-    assert "Марк" in generated.template.body
-    assert generated.request_payload is None
+    reset_settings_cache()
+
+
+@respx.mock
+def test_email_generator_retries_and_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_settings_cache()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=httpx.Response(500, json={"error": {"message": "temporary"}})
+    )
+
+    generator = EmailGenerator(retry_attempts=2)
+    company = CompanyBrief(name="Alpha", domain="alpha.ru", industry="Маркетинг")
+    offer = OfferBrief(pains=["Нужны лиды"], value_proposition="Запустим кампанию за 7 дней")
+    sleeps: List[int] = []
+    monkeypatch.setattr("app.modules.generate_email_gpt.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(EmailGenerationError, match="Не удалось сгенерировать письмо"):
+        generator.generate(company, offer)
+
+    assert respx.calls.call_count == 2
+    assert sleeps == [20]
+
+    reset_settings_cache()
+
+
+def test_email_generator_uses_progressive_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    reset_settings_cache()
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    call_count = {"value": 0}
+
+    def fake_request(payload):  # noqa: ANN001
+        call_count["value"] += 1
+        raise httpx.HTTPError("temporary")
+
+    sleeps: List[int] = []
+    monkeypatch.setattr("app.modules.generate_email_gpt.EmailGenerator._request_openai", lambda self, payload: fake_request(payload))
+    monkeypatch.setattr("app.modules.generate_email_gpt.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    generator = EmailGenerator(retry_attempts=3)
+    company = CompanyBrief(name="Alpha", domain="alpha.ru", industry="Маркетинг")
+    offer = OfferBrief(pains=["Нужны лиды"], value_proposition="Запустим кампанию за 7 дней")
+
+    with pytest.raises(EmailGenerationError):
+        generator.generate(company, offer)
+
+    assert call_count["value"] == 3
+    assert sleeps == [20, 40]
 
     reset_settings_cache()
 
@@ -420,6 +467,53 @@ def test_email_sender_deliver_success(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
 
 
+def test_email_sender_deliver_rejects_repeat_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = DummySession()
+    reset_settings_cache()
+
+    sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
+    sender.mx_router = MagicMock()
+    sender.mx_router.classify.return_value = MXResult("OTHER", ["mx.test"], False)
+    deliver_mock = MagicMock()
+    monkeypatch.setattr(sender, "_send_via_channel", deliver_mock)
+    monkeypatch.setattr(sender, "_is_within_send_window", lambda *_: True)
+
+    template = generator_template()
+    outreach_id = sender.queue(
+        company_id="c1",
+        contact_id="contact1",
+        to_email="hello@example.com",
+        template=template,
+        request_payload={"messages": []},
+        session=session,
+    )
+
+    first = sender.deliver(
+        outreach_id=outreach_id,
+        company_id="c1",
+        contact_id="contact1",
+        to_email="hello@example.com",
+        subject=template.subject,
+        body=template.body,
+        session=session,
+    )
+    second = sender.deliver(
+        outreach_id=outreach_id,
+        company_id="c1",
+        contact_id="contact1",
+        to_email="hello@example.com",
+        subject=template.subject,
+        body=template.body,
+        session=session,
+    )
+
+    assert first == "sent"
+    assert second == "skipped"
+    assert deliver_mock.call_count == 1
+
+    reset_settings_cache()
+
+
 def test_email_sender_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
     reset_settings_cache()
@@ -450,7 +544,4 @@ def test_email_sender_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def generator_template():
-    company = CompanyBrief(name="Test", domain="test.ru")
-    offer = OfferBrief(value_proposition="Automation")
-    generator = EmailGenerator()
-    return generator._fallback_template(company, offer, None)
+    return EmailTemplate(subject="Тестовая тема", body="Тестовое тело письма")

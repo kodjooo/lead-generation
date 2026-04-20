@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import time
+from hashlib import sha256
 from dataclasses import dataclass
 from unicodedata import category
 from typing import Dict, Iterable, List, Optional, Set
@@ -15,11 +18,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.modules.constants import HOMEPAGE_EXCERPT_LIMIT
+from app.config import get_settings
 from app.modules.utils.db import get_session_factory, session_scope
 from app.modules.utils.email import clean_email, is_valid_email
 from app.modules.utils.normalize import normalize_url
 
 LOGGER = logging.getLogger("app.enrich_contacts")
+EMAIL_TEXT_REGEX = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
 @dataclass
@@ -62,11 +67,23 @@ class ContactEnricher:
         session_factory: Optional[sessionmaker[Session]] = None,
         timeout: float = 10.0,
     ) -> None:
+        settings = get_settings()
+        enrichment = settings.enrichment
         self.session_factory = session_factory or get_session_factory()
-        self.timeout = timeout
+        self.timeout = enrichment.timeout_seconds if timeout == 10.0 else timeout
+        self.max_redirects = enrichment.max_redirects
         self.headers = {
             "User-Agent": "LeadGenBot/1.0 (+https://example.com/bot-info)",
         }
+        client_kwargs = {
+            "timeout": self.timeout,
+            "headers": self.headers,
+            "follow_redirects": True,
+            "max_redirects": self.max_redirects,
+        }
+        self.client = httpx.Client(**client_kwargs)
+        self.proxy_urls = enrichment.proxy_urls
+        self._proxy_health: Dict[str, float] = {}
 
     def enrich_company(
         self,
@@ -157,7 +174,18 @@ class ContactEnricher:
         return inserted_ids
 
     def _build_candidate_urls(self, base_url: str) -> List[str]:
-        suffixes = ["/", "/contact", "/contacts", "/about", "/about-us", "/kontakty"]
+        suffixes = [
+            "/",
+            "/contact",
+            "/contacts",
+            "/contact-us",
+            "/contacts/",
+            "/about",
+            "/about-us",
+            "/kontakty",
+            "/rekvizity",
+            "/company",
+        ]
         seen: Set[str] = set()
         candidates: List[str] = []
         for suffix in suffixes:
@@ -168,19 +196,74 @@ class ContactEnricher:
         return candidates
 
     def _fetch_html(self, url: str) -> str:
-        try:
-            response = httpx.get(url, timeout=self.timeout, headers=self.headers, follow_redirects=True)
-            if response.status_code >= 400:
-                LOGGER.debug("Страница %s вернула статус %s", url, response.status_code)
-                return ""
-            return response.text
-        except httpx.HTTPError as exc:  # noqa: PERF203
-            LOGGER.debug("Не удалось загрузить %s: %s", url, exc)
-            return ""
+        clients = self._clients_for_url(url)
+        for client, proxy_url in clients:
+            if proxy_url and not self._proxy_available(proxy_url):
+                continue
+            try:
+                response = client.get(url)
+                if response.status_code >= 500:
+                    LOGGER.debug("Страница %s вернула статус %s через %s", url, response.status_code, proxy_url or "direct")
+                    self._mark_proxy_failed(proxy_url)
+                    continue
+                if response.status_code >= 400:
+                    LOGGER.debug("Страница %s вернула статус %s", url, response.status_code)
+                    return ""
+                if proxy_url:
+                    self._mark_proxy_success(proxy_url)
+                return response.text
+            except httpx.HTTPError as exc:  # noqa: PERF203
+                LOGGER.debug("Не удалось загрузить %s через %s: %s", url, proxy_url or "direct", exc)
+                self._mark_proxy_failed(proxy_url)
+                continue
+        return ""
+
+    def _clients_for_url(self, url: str) -> List[tuple[httpx.Client, Optional[str]]]:
+        if not self.proxy_urls:
+            return [(self.client, None)]
+        ordered = list(self.proxy_urls)
+        index = int(sha256(url.encode("utf-8")).hexdigest(), 16) % len(ordered)
+        ordered = ordered[index:] + ordered[:index]
+        clients: List[tuple[httpx.Client, Optional[str]]] = [(self.client, None)]
+        for proxy_url in ordered:
+            clients.append((self._proxy_client(proxy_url), proxy_url))
+        return clients
+
+    def _proxy_client(self, proxy_url: str) -> httpx.Client:
+        if getattr(self, "_proxy_cache", None) is None:
+            self._proxy_cache = {}
+        proxy_cache = self._proxy_cache  # type: ignore[attr-defined]
+        if proxy_url not in proxy_cache:
+            proxy_cache[proxy_url] = httpx.Client(
+                timeout=self.timeout,
+                headers=self.headers,
+                follow_redirects=True,
+                max_redirects=self.max_redirects,
+                proxy=proxy_url,
+            )
+        return proxy_cache[proxy_url]
+
+    def _proxy_available(self, proxy_url: str) -> bool:
+        retry_after = self._proxy_health.get(proxy_url)
+        if retry_after is None:
+            return True
+        return retry_after <= time.time()
+
+    def _mark_proxy_failed(self, proxy_url: Optional[str]) -> None:
+        if not proxy_url:
+            return
+        self._proxy_health[proxy_url] = time.time() + 300
+
+    def _mark_proxy_success(self, proxy_url: Optional[str]) -> None:
+        if not proxy_url:
+            return
+        self._proxy_health.pop(proxy_url, None)
 
     def _extract_contacts_from_html(self, html: str, source_url: str) -> Iterable[ContactRecord]:
         soup = BeautifulSoup(html, "html.parser")
         found_email: Optional[ContactRecord] = None
+        seen: Set[str] = set()
+        records: List[ContactRecord] = []
 
         # mailto/tel ссылки
         for anchor in soup.find_all("a"):
@@ -192,14 +275,54 @@ class ContactEnricher:
                 if not is_valid_email(cleaned):
                     LOGGER.debug("Пропускаем mailto без валидного e-mail: %s", email)
                     continue
-                record = ContactRecord("email", cleaned, source_url, 1.0, origin="mailto", label=text or "mailto")
-                found_email = record
-                break
+                key = f"email:{cleaned}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(
+                    ContactRecord("email", cleaned, source_url, 1.0, origin="mailto", label=text or "mailto")
+                )
+
+            for attr_name in ("data-email", "data-mail", "href"):
+                attr_value = (anchor.get(attr_name) or "").strip()
+                for email in self._find_emails(attr_value):
+                    key = f"email:{email}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    records.append(
+                        ContactRecord("email", email, source_url, 0.92, origin="attribute", label=text or attr_name)
+                    )
+
+        for email in self._find_emails(soup.get_text(" ", strip=True)):
+            key = f"email:{email}"
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(ContactRecord("email", email, source_url, 0.85, origin="text", label="text"))
+
+        if records:
+            records.sort(key=lambda record: record.quality_score, reverse=True)
+            found_email = records[0]
 
         if found_email:
             return [found_email]
 
         return []
+
+    @staticmethod
+    def _find_emails(value: str) -> List[str]:
+        if not value:
+            return []
+        emails: List[str] = []
+        seen: Set[str] = set()
+        for match in EMAIL_TEXT_REGEX.findall(value):
+            cleaned = clean_email(match)
+            if not is_valid_email(cleaned) or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            emails.append(cleaned)
+        return emails
 
     @staticmethod
     def _mark_company_status(session: Session, company_id: str, status: str) -> None:

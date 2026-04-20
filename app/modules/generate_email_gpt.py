@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -13,6 +14,8 @@ from app.config import get_settings
 
 LOGGER = logging.getLogger("app.generate_email")
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
+DEFAULT_GENERATION_RETRIES = 3
+DEFAULT_RETRY_DELAYS_SECONDS = (20, 40, 60)
 
 
 @dataclass
@@ -61,6 +64,10 @@ class GeneratedEmail:
     used_fallback: bool = False
 
 
+class EmailGenerationError(RuntimeError):
+    """Ошибка генерации письма после всех попыток."""
+
+
 class EmailGenerator:
     """Инкапсулирует обращение к LLM и fallback-шаблон."""
 
@@ -71,11 +78,15 @@ class EmailGenerator:
         language: str = "ru",
         temperature: float = 0.4,
         timeout: float = 15.0,
+        retry_attempts: int = DEFAULT_GENERATION_RETRIES,
+        retry_delays_seconds: tuple[int, ...] = DEFAULT_RETRY_DELAYS_SECONDS,
     ) -> None:
         self.model = model
         self.language = language
         self.temperature = temperature
         self.timeout = timeout
+        self.retry_attempts = max(1, retry_attempts)
+        self.retry_delays_seconds = retry_delays_seconds
         self.settings = get_settings()
 
     def generate(
@@ -87,22 +98,27 @@ class EmailGenerator:
         """Возвращает готовый шаблон и исходный запрос к LLM."""
         payload: Optional[Dict[str, object]] = None
         if not self.settings.openai_api_key:
-            LOGGER.warning("OPENAI_API_KEY не задан, используется fallback-шаблон.")
-            template = self._fallback_template(company, offer, contact)
-            return GeneratedEmail(template=template, request_payload=None, used_fallback=True)
+            raise EmailGenerationError("OPENAI_API_KEY не задан")
 
-        try:
-            payload = self._build_payload(company, offer, contact)
-            response = self._request_openai(payload)
-            parsed = self._parse_openai_response(response)
-            if parsed:
-                return GeneratedEmail(template=parsed, request_payload=payload, used_fallback=False)
-            template = self._fallback_template(company, offer, contact)
-            return GeneratedEmail(template=template, request_payload=payload, used_fallback=True)
-        except httpx.HTTPError as exc:  # noqa: PERF203
-            LOGGER.error("Ошибка обращения к OpenAI: %s", exc)
-            template = self._fallback_template(company, offer, contact)
-            return GeneratedEmail(template=template, request_payload=payload, used_fallback=True)
+        payload = self._build_payload(company, offer, contact)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.retry_attempts + 1):
+            try:
+                response = self._request_openai(payload)
+                parsed = self._parse_openai_response(response)
+                if parsed:
+                    return GeneratedEmail(template=parsed, request_payload=payload, used_fallback=False)
+                last_error = EmailGenerationError("OpenAI returned an empty or invalid payload")
+            except httpx.HTTPError as exc:  # noqa: PERF203
+                last_error = exc
+
+            if attempt < self.retry_attempts:
+                LOGGER.warning("Ошибка генерации письма, попытка %s/%s: %s", attempt, self.retry_attempts, last_error)
+                delay_index = min(attempt - 1, len(self.retry_delays_seconds) - 1)
+                if delay_index >= 0:
+                    time.sleep(self.retry_delays_seconds[delay_index])
+
+        raise EmailGenerationError(f"Не удалось сгенерировать письмо после {self.retry_attempts} попыток: {last_error}")
 
     def _build_payload(
         self,
@@ -178,51 +194,6 @@ class EmailGenerator:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             LOGGER.error("Не удалось интерпретировать ответ LLM: %s", response)
             return None
-
-    def _fallback_template(
-        self,
-        company: CompanyBrief,
-        offer: OfferBrief,
-        contact: Optional[ContactBrief],
-    ) -> EmailTemplate:
-        subject = "Идея по оптимизации процессов вашей компании"
-        industry_fragment = company.industry or "вашей сфере"
-        if offer.value_proposition:
-            automation_example = offer.value_proposition.lower()
-            process_hint = (
-                f"например, {automation_example}, чтобы команда меньше тратила времени на рутину"
-            )
-        elif offer.pains:
-            pain_focus = offer.pains[0].lower()
-            process_hint = (
-                f"например, автоматизировать части процесса вокруг {pain_focus}, "
-                "чтобы команда меньше тратила времени на рутину"
-            )
-        else:
-            process_hint = (
-                "например, автоматизировать обработку заявок или подготовку отчётов, "
-                "чтобы команда меньше тратила времени на рутину"
-            )
-        observation = (
-            "Обратил внимание, как вы последовательно развиваете проекты — глаз зацепился за кейсы на главной."
-            if not offer.pains
-            else "Понравилось, что вы так системно подходите к своим задачам — это редко встретишь."
-        )
-        body_lines = [
-            "Добрый день!",
-            "Меня зовут Марк, я занимаюсь автоматизацией бизнес-процессов с помощью нейросетей и Python.",
-            f"Посмотрел ваш сайт — по описанию видно, что вы работаете в сфере {industry_fragment}.",
-            observation,
-            f"Мне кажется, здесь можно упростить процессы, {process_hint}.",
-            "",
-            "Если интересно, могу показать на конкретных примерах, как это работает.",
-            "",
-            "С уважением,",
-            "Марк Аборчи",
-            "AI-Automation Specialist",
-        ]
-        body = "\n".join(body_lines)
-        return EmailTemplate(subject=subject, body=body)
 
     def _response_schema(self) -> Dict[str, object]:
         return {

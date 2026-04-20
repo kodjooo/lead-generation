@@ -140,6 +140,15 @@ class SheetSyncSettings:
 
 
 @dataclass(frozen=True)
+class EnrichmentSettings:
+    """Параметры обхода сайтов при поиске контактов."""
+
+    timeout_seconds: float
+    max_redirects: int
+    proxy_urls: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Settings:
     """Глобальные настройки приложения."""
 
@@ -159,6 +168,7 @@ class Settings:
     routing: RoutingSettings
     google_sheets: GoogleSheetsSettings
     sheet_sync: SheetSyncSettings
+    enrichment: EnrichmentSettings
 
 
 def _env(key: str, default: str = "") -> str:
@@ -280,6 +290,12 @@ def get_settings() -> Settings:
         batch_tag=_env("SHEET_SYNC_BATCH_TAG") or None,
     )
 
+    enrichment = EnrichmentSettings(
+        timeout_seconds=max(float(_env("ENRICH_TIMEOUT_SECONDS", "6")) or 6.0, 1.0),
+        max_redirects=max(int(_env("ENRICH_MAX_REDIRECTS", "5")), 0),
+        proxy_urls=tuple(_env_list("ENRICH_PROXY_URL")),
+    )
+
     return Settings(
         timezone=_env("APP_TIMEZONE", "Europe/Moscow"),
         yandex_folder_id=_env("YANDEX_CLOUD_FOLDER_ID"),
@@ -297,4 +313,5 @@ def get_settings() -> Settings:
         routing=routing,
         google_sheets=google_sheets,
         sheet_sync=sheet_sync,
+        enrichment=enrichment,
     )

@@ -74,6 +74,39 @@ def test_extract_contacts_skips_invalid_mailto() -> None:
     assert contacts == []
 
 
+def test_extract_contacts_from_text_without_mailto() -> None:
+    enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
+    html = """
+    <html>
+      <body>
+        <p>Для связи: info@example.com</p>
+      </body>
+    </html>
+    """
+
+    contacts = list(enricher._extract_contacts_from_html(html, "https://example.com"))
+
+    assert len(contacts) == 1
+    assert contacts[0].value == "info@example.com"
+    assert contacts[0].origin == "text"
+
+
+def test_extract_contacts_decodes_percent_encoded_email() -> None:
+    enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
+    html = """
+    <html>
+      <body>
+        <p>Связь: %20info@jurint.pro</p>
+      </body>
+    </html>
+    """
+
+    contacts = list(enricher._extract_contacts_from_html(html, "https://example.com"))
+
+    assert len(contacts) == 1
+    assert contacts[0].value == "info@jurint.pro"
+
+
 @respx.mock
 def test_enrich_company_persists_contacts() -> None:
     session = DummySession()
@@ -113,6 +146,35 @@ def test_enrich_company_persists_contacts() -> None:
 
 
 @respx.mock
+def test_enrich_company_uses_contact_page_text_email() -> None:
+    session = DummySession()
+    enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    respx.get("https://site.com/").mock(
+        return_value=httpx.Response(200, text="<html><body><h1>Главная</h1></body></html>")
+    )
+    respx.get("https://site.com/contact").mock(
+        return_value=httpx.Response(
+            200,
+            text="""
+            <html>
+              <body>
+                <p>Связаться можно по адресу office@site.com</p>
+              </body>
+            </html>
+            """,
+        )
+    )
+
+    inserted = enricher.enrich_company("company-4", "site.com", session=session)
+
+    assert inserted == ["contact-1"]
+    insert_calls = [call for call in session.calls if "INSERT INTO contacts" in call[0]]
+    assert len(insert_calls) == 1
+    assert insert_calls[0][1]["value"] == "office@site.com"
+
+
+@respx.mock
 def test_enrich_company_marks_not_found() -> None:
     session = DummySession()
     enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
@@ -131,7 +193,7 @@ def test_enrich_company_marks_not_found() -> None:
             )
         )
 
-    for suffix in ["contact", "contacts", "about", "about-us", "kontakty"]:
+    for suffix in ["contact", "contacts", "contacts/", "contact-us", "about", "about-us", "kontakty", "rekvizity", "company"]:
         respx.get(f"https://empty.com/{suffix}").mock(return_value=httpx.Response(404, text="not found"))
 
     inserted = enricher.enrich_company("company-2", "empty.com", session=session)
@@ -154,3 +216,30 @@ def test_sanitize_excerpt_removes_control_chars() -> None:
     data = json.loads(payload)
     assert data["homepage_excerpt"] == "Привет мир!"
     assert "\u0000" not in data["homepage_excerpt"]
+
+
+def test_proxy_rotation_picks_one_of_configured_proxies(monkeypatch) -> None:
+    monkeypatch.setenv("ENRICH_PROXY_URL", "http://proxy1.local:8080,http://proxy2.local:8080,http://proxy3.local:8080")
+    enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
+
+    clients = enricher._clients_for_url("https://example.com/contact")
+    assert isinstance(clients[0][0], httpx.Client)
+    assert len(enricher.proxy_urls) == 3
+
+
+@respx.mock
+def test_enrich_company_retries_next_proxy_on_error(monkeypatch) -> None:
+    monkeypatch.setenv("ENRICH_PROXY_URL", "http://proxy1.local:8080,http://proxy2.local:8080")
+    session = DummySession()
+    enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    # Первый путь через direct вернёт 503 и будет пропущен, второй через proxy отдаст email.
+    respx.get("https://example.com/").mock(return_value=httpx.Response(503, text="busy"))
+    respx.get("https://example.com/contact").mock(
+        return_value=httpx.Response(200, text="<html><body>info@example.com</body></html>")
+    )
+
+    inserted = enricher.enrich_company("company-5", "example.com", session=session)
+
+    assert inserted == ["contact-1"]
+    assert any("INSERT INTO contacts" in call[0] for call in session.calls)
