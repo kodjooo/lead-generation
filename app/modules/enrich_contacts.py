@@ -12,7 +12,6 @@ from unicodedata import category
 from typing import Dict, Iterable, List, Optional, Set
 from urllib.parse import urljoin
 
-import httpx
 from bs4 import BeautifulSoup
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
@@ -25,6 +24,7 @@ from app.modules.utils.normalize import normalize_url
 
 LOGGER = logging.getLogger("app.enrich_contacts")
 EMAIL_TEXT_REGEX = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
+PLAYWRIGHT_TIMEOUT_MULTIPLIER = 1000
 
 
 @dataclass
@@ -75,13 +75,6 @@ class ContactEnricher:
         self.headers = {
             "User-Agent": "LeadGenBot/1.0 (+https://example.com/bot-info)",
         }
-        client_kwargs = {
-            "timeout": self.timeout,
-            "headers": self.headers,
-            "follow_redirects": True,
-            "max_redirects": self.max_redirects,
-        }
-        self.client = httpx.Client(**client_kwargs)
         self.proxy_urls = enrichment.proxy_urls
         self._proxy_health: Dict[str, float] = {}
 
@@ -197,51 +190,43 @@ class ContactEnricher:
 
     def _fetch_html(self, url: str) -> str:
         clients = self._clients_for_url(url)
-        for client, proxy_url in clients:
+        last_error: Optional[str] = None
+        for proxy_url in clients:
             if proxy_url and not self._proxy_available(proxy_url):
                 continue
             try:
-                response = client.get(url)
-                if response.status_code >= 500:
-                    LOGGER.debug("Страница %s вернула статус %s через %s", url, response.status_code, proxy_url or "direct")
+                response = self._load_page(url, proxy_url)
+                if response is None:
+                    last_error = "empty_response"
                     self._mark_proxy_failed(proxy_url)
                     continue
-                if response.status_code >= 400:
-                    LOGGER.debug("Страница %s вернула статус %s", url, response.status_code)
+                if response.status >= 500:
+                    LOGGER.debug("Страница %s вернула статус %s через %s", url, response.status, proxy_url or "direct")
+                    last_error = f"status_{response.status}"
+                    self._mark_proxy_failed(proxy_url)
+                    continue
+                if response.status >= 400:
+                    LOGGER.debug("Страница %s вернула статус %s", url, response.status)
                     return ""
                 if proxy_url:
                     self._mark_proxy_success(proxy_url)
-                return response.text
-            except httpx.HTTPError as exc:  # noqa: PERF203
+                return response.html
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
                 LOGGER.debug("Не удалось загрузить %s через %s: %s", url, proxy_url or "direct", exc)
                 self._mark_proxy_failed(proxy_url)
                 continue
+        if last_error:
+            LOGGER.debug("Не удалось получить HTML для %s: %s", url, last_error)
         return ""
 
-    def _clients_for_url(self, url: str) -> List[tuple[httpx.Client, Optional[str]]]:
+    def _clients_for_url(self, url: str) -> List[Optional[str]]:
         if not self.proxy_urls:
-            return [(self.client, None)]
+            return [None]
         ordered = list(self.proxy_urls)
         index = int(sha256(url.encode("utf-8")).hexdigest(), 16) % len(ordered)
         ordered = ordered[index:] + ordered[:index]
-        clients: List[tuple[httpx.Client, Optional[str]]] = [(self.client, None)]
-        for proxy_url in ordered:
-            clients.append((self._proxy_client(proxy_url), proxy_url))
-        return clients
-
-    def _proxy_client(self, proxy_url: str) -> httpx.Client:
-        if getattr(self, "_proxy_cache", None) is None:
-            self._proxy_cache = {}
-        proxy_cache = self._proxy_cache  # type: ignore[attr-defined]
-        if proxy_url not in proxy_cache:
-            proxy_cache[proxy_url] = httpx.Client(
-                timeout=self.timeout,
-                headers=self.headers,
-                follow_redirects=True,
-                max_redirects=self.max_redirects,
-                proxy=proxy_url,
-            )
-        return proxy_cache[proxy_url]
+        return [None, *ordered]
 
     def _proxy_available(self, proxy_url: str) -> bool:
         retry_after = self._proxy_health.get(proxy_url)
@@ -258,6 +243,41 @@ class ContactEnricher:
         if not proxy_url:
             return
         self._proxy_health.pop(proxy_url, None)
+
+    def _load_page(self, url: str, proxy_url: Optional[str]) -> "_LoadedPage":
+        with self._get_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                headless=True,
+                proxy={"server": proxy_url} if proxy_url else None,
+            )
+            try:
+                context = browser.new_context(
+                    user_agent=self.headers["User-Agent"],
+                    ignore_https_errors=True,
+                )
+                page = context.new_page()
+                try:
+                    response = page.goto(
+                        url,
+                        wait_until="networkidle",
+                        timeout=int(self.timeout * PLAYWRIGHT_TIMEOUT_MULTIPLIER),
+                    )
+                    status = response.status if response is not None else 0
+                    return _LoadedPage(status=status, html=page.content())
+                finally:
+                    context.close()
+            finally:
+                browser.close()
+
+    @staticmethod
+    def _get_playwright():
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Для enrichment требуется playwright. Установите зависимость и браузеры Chromium."
+            ) from exc
+        return sync_playwright()
 
     def _extract_contacts_from_html(self, html: str, source_url: str) -> Iterable[ContactRecord]:
         soup = BeautifulSoup(html, "html.parser")
@@ -357,3 +377,9 @@ class ContactEnricher:
         if not text_value:
             return ""
         return "".join(ch for ch in text_value if ch != "\x00" and category(ch) != "Cc")
+
+
+@dataclass
+class _LoadedPage:
+    status: int
+    html: str
