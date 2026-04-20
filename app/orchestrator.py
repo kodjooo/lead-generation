@@ -91,10 +91,16 @@ WHERE id = :operation_id;
 
 SELECT_COMPANIES_WITHOUT_CONTACTS_SQL = """
 WITH candidates AS (
-    SELECT c.id
+    SELECT c.id, c.status AS prior_status
     FROM companies c
     WHERE c.canonical_domain IS NOT NULL
-      AND c.status IN ('new', 'contacts_not_found')
+      AND (
+          c.status = 'new'
+          OR (
+              c.status = 'contacts_not_found'
+              AND COALESCE(c.attributes ->> 'contacts_backfill_done_at', '') = ''
+          )
+      )
       AND NOT EXISTS (
           SELECT 1
           FROM contacts ct
@@ -109,7 +115,7 @@ SET status = 'contacts_processing',
     updated_at = NOW()
 FROM candidates
 WHERE c.id = candidates.id
-RETURNING c.id, c.canonical_domain;
+RETURNING c.id, c.canonical_domain, candidates.prior_status;
 """
 
 SELECT_CONTACTS_FOR_OUTREACH_SQL = """
@@ -443,6 +449,21 @@ class PipelineOrchestrator:
                         canonical_domain=canonical_domain,
                         session=session,
                     )
+                    if row.get("prior_status") == "contacts_not_found":
+                        session.execute(
+                            text(
+                                """
+                                UPDATE companies
+                                SET attributes = attributes || CAST(:patch AS JSONB),
+                                    updated_at = NOW()
+                                WHERE id = :id
+                                """
+                            ),
+                            {
+                                "id": row["id"],
+                                "patch": json.dumps({"contacts_backfill_done_at": datetime.now(timezone.utc).isoformat()}),
+                            },
+                        )
                     if inserted:
                         count += 1
                 except Exception as exc:  # noqa: BLE001
