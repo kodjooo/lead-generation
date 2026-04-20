@@ -96,7 +96,7 @@ WITH candidates AS (
     LEFT JOIN contacts ct ON ct.company_id = c.id
     WHERE ct.id IS NULL
       AND c.canonical_domain IS NOT NULL
-      AND c.status = 'new'
+      AND c.status IN ('new', 'contacts_not_found')
     ORDER BY c.created_at
     FOR UPDATE SKIP LOCKED
     LIMIT :limit

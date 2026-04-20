@@ -28,6 +28,7 @@ LOGGER = logging.getLogger("app.enrich_contacts")
 EMAIL_TEXT_REGEX = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 PLAYWRIGHT_TIMEOUT_MULTIPLIER = 1000
 PLAYWRIGHT_PROFILE_ROOT = Path(tempfile.gettempdir()) / "lead-generation-playwright-profiles"
+PROXY_COOLDOWN_SECONDS = 300
 
 
 @dataclass
@@ -211,6 +212,11 @@ class ContactEnricher:
                     last_error = f"status_{response.status}"
                     self._mark_proxy_failed(proxy_url)
                     continue
+                if response.status in (403, 429):
+                    LOGGER.debug("Страница %s вернула антибот-статус %s через %s", url, response.status, proxy_url or "direct")
+                    last_error = f"status_{response.status}"
+                    self._mark_proxy_failed(proxy_url)
+                    continue
                 if response.status >= 400:
                     LOGGER.debug("Страница %s вернула статус %s", url, response.status)
                     return ""
@@ -243,7 +249,7 @@ class ContactEnricher:
     def _mark_proxy_failed(self, proxy_url: Optional[str]) -> None:
         if not proxy_url:
             return
-        self._proxy_health[proxy_url] = time.time() + 300
+        self._proxy_health[proxy_url] = time.time() + PROXY_COOLDOWN_SECONDS
 
     def _mark_proxy_success(self, proxy_url: Optional[str]) -> None:
         if not proxy_url:

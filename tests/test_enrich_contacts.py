@@ -199,3 +199,25 @@ def test_enrich_company_retries_next_proxy_on_error(monkeypatch) -> None:
     assert inserted == ["contact-1"]
     assert calls[0] is None
     assert calls[1] is not None
+
+
+def test_enrich_company_rotates_proxy_on_429(monkeypatch) -> None:
+    monkeypatch.setenv("ENRICH_PROXY_URL", "http://proxy1.local:8080,http://proxy2.local:8080")
+    session = DummySession()
+    enricher = ContactEnricher(session_factory=lambda: session)  # type: ignore[arg-type]
+
+    calls = []
+
+    def fake_load_page(url: str, proxy_url: str | None):  # noqa: ANN001
+        calls.append(proxy_url)
+        if proxy_url is None:
+            return SimpleNamespace(status=429, html="")
+        return SimpleNamespace(status=200, html="<html><body>info@example.com</body></html>")
+
+    monkeypatch.setattr(enricher, "_load_page", fake_load_page)
+
+    inserted = enricher.enrich_company("company-6", "example.com", session=session)
+
+    assert inserted == ["contact-1"]
+    assert calls[0] is None
+    assert calls[1] is not None
