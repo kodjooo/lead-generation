@@ -6,8 +6,10 @@ import json
 import logging
 import re
 import time
+import tempfile
 from hashlib import sha256
 from dataclasses import dataclass
+from pathlib import Path
 from unicodedata import category
 from typing import Dict, Iterable, List, Optional, Set
 from urllib.parse import urljoin
@@ -25,6 +27,7 @@ from app.modules.utils.normalize import normalize_url
 LOGGER = logging.getLogger("app.enrich_contacts")
 EMAIL_TEXT_REGEX = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 PLAYWRIGHT_TIMEOUT_MULTIPLIER = 1000
+PLAYWRIGHT_PROFILE_ROOT = Path(tempfile.gettempdir()) / "lead-generation-playwright-profiles"
 
 
 @dataclass
@@ -74,9 +77,12 @@ class ContactEnricher:
         self.max_redirects = enrichment.max_redirects
         self.headers = {
             "User-Agent": "LeadGenBot/1.0 (+https://example.com/bot-info)",
+            "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
         self.proxy_urls = enrichment.proxy_urls
         self._proxy_health: Dict[str, float] = {}
+        self._playwright_contexts: Dict[str | None, object] = {}
+        self._profile_dirs: Dict[str | None, Path] = {}
 
     def enrich_company(
         self,
@@ -246,28 +252,54 @@ class ContactEnricher:
 
     def _load_page(self, url: str, proxy_url: Optional[str]) -> "_LoadedPage":
         with self._get_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                proxy={"server": proxy_url} if proxy_url else None,
-            )
+            context = self._browser_context_for_proxy(playwright, proxy_url)
+            page = context.new_page()
             try:
-                context = browser.new_context(
-                    user_agent=self.headers["User-Agent"],
-                    ignore_https_errors=True,
+                page.add_init_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+                    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+                    """
                 )
-                page = context.new_page()
-                try:
-                    response = page.goto(
-                        url,
-                        wait_until="networkidle",
-                        timeout=int(self.timeout * PLAYWRIGHT_TIMEOUT_MULTIPLIER),
-                    )
-                    status = response.status if response is not None else 0
-                    return _LoadedPage(status=status, html=page.content())
-                finally:
-                    context.close()
+                page.set_extra_http_headers(self.headers)
+                response = page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=int(self.timeout * PLAYWRIGHT_TIMEOUT_MULTIPLIER),
+                )
+                page.wait_for_timeout(1200)
+                status = response.status if response is not None else 0
+                return _LoadedPage(status=status, html=page.content())
             finally:
-                browser.close()
+                page.close()
+
+    def _browser_context_for_proxy(self, playwright, proxy_url: Optional[str]):  # noqa: ANN001
+        cache_key = proxy_url or "__direct__"
+        cached = self._playwright_contexts.get(cache_key)
+        if cached is not None:
+            return cached
+
+        PLAYWRIGHT_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
+        profile_dir = self._profile_dirs.get(cache_key)
+        if profile_dir is None:
+            profile_dir = PLAYWRIGHT_PROFILE_ROOT / sha256(cache_key.encode("utf-8")).hexdigest()
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            self._profile_dirs[cache_key] = profile_dir
+
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=True,
+            proxy={"server": proxy_url} if proxy_url else None,
+            user_agent=self.headers["User-Agent"],
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
+            viewport={"width": 1440, "height": 900},
+            ignore_https_errors=True,
+            extra_http_headers=self.headers,
+        )
+        self._playwright_contexts[cache_key] = context
+        return context
 
     @staticmethod
     def _get_playwright():
