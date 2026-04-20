@@ -148,7 +148,7 @@ services:
    ```
 3. **Заполните `.env`:** пропишите ключи Yandex и Google, Gmail `GMAIL_*` (App Password) и Яндекс `YANDEX_*` параметры, активируйте `ROUTING_ENABLED=true`, установите `EMAIL_SENDING_ENABLED=false`, если отправку нужно временно отключить.
 4. **Подготовьте Playwright:** после сборки образа `app` выполните `python -m playwright install chromium`, иначе enrichment не сможет запускать браузерный обход сайтов.
-5. **Разместите ключи сервисных аккаунтов:** скопируйте файлы JSON в каталог `secure/` на сервере. Если файла нет (`secure/authorized_key.json`), Docker создаст директорию с таким именем, и сервисы завершатся ошибкой `IsADirectoryError`.
+5. **Разместите ключи сервисных аккаунтов:** скопируйте файлы JSON в каталог `runtime-secrets/` на сервере. Если файла нет (`runtime-secrets/authorized_key.json`), Docker создаст директорию с таким именем, и сервисы завершатся ошибкой `IsADirectoryError`.
 6. **Запустите сервисы:**
    ```bash
    docker compose up -d --build
