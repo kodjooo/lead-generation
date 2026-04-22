@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import tempfile
+import atexit
 from hashlib import sha256
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,7 +87,11 @@ class ContactEnricher:
         }
         self.proxy_urls = enrichment.proxy_urls
         self._proxy_health: Dict[str, float] = {}
+        self._playwright_contexts: Dict[str | None, object] = {}
         self._profile_dirs: Dict[str | None, Path] = {}
+        self._playwright_manager = None
+        self._playwright = None
+        atexit.register(self.close)
 
     def enrich_company(
         self,
@@ -260,32 +265,35 @@ class ContactEnricher:
         self._proxy_health.pop(proxy_url, None)
 
     def _load_page(self, url: str, proxy_url: Optional[str]) -> "_LoadedPage":
-        with self._get_playwright() as playwright:
-            context = self._browser_context_for_proxy(playwright, proxy_url)
-            page = context.new_page()
-            try:
-                page.add_init_script(
-                    """
-                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                    Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
-                    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
-                    """
-                )
-                page.set_extra_http_headers(self.headers)
-                response = page.goto(
-                    url,
-                    wait_until="domcontentloaded",
-                    timeout=int(self.timeout * PLAYWRIGHT_TIMEOUT_MULTIPLIER),
-                )
-                page.wait_for_timeout(1200)
-                status = response.status if response is not None else 0
-                return _LoadedPage(status=status, html=page.content())
-            finally:
-                page.close()
-                context.close()
+        context = self._browser_context_for_proxy(proxy_url)
+        page = context.new_page()
+        try:
+            page.add_init_script(
+                """
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
+                Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+                """
+            )
+            page.set_extra_http_headers(self.headers)
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout * PLAYWRIGHT_TIMEOUT_MULTIPLIER),
+            )
+            page.wait_for_timeout(1200)
+            status = response.status if response is not None else 0
+            return _LoadedPage(status=status, html=page.content())
+        finally:
+            page.close()
 
-    def _browser_context_for_proxy(self, playwright, proxy_url: Optional[str]):  # noqa: ANN001
+    def _browser_context_for_proxy(self, proxy_url: Optional[str]):  # noqa: ANN001
         cache_key = proxy_url or "__direct__"
+        cached = self._playwright_contexts.get(cache_key)
+        if cached is not None:
+            return cached
+
+        playwright = self._ensure_playwright()
         PLAYWRIGHT_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
         profile_dir = self._profile_dirs.get(cache_key)
         if profile_dir is None:
@@ -293,7 +301,7 @@ class ContactEnricher:
             profile_dir.mkdir(parents=True, exist_ok=True)
             self._profile_dirs[cache_key] = profile_dir
 
-        return playwright.chromium.launch_persistent_context(
+        context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=True,
             proxy={"server": proxy_url} if proxy_url else None,
@@ -304,6 +312,31 @@ class ContactEnricher:
             ignore_https_errors=True,
             extra_http_headers=self.headers,
         )
+        self._playwright_contexts[cache_key] = context
+        return context
+
+    def _ensure_playwright(self):  # noqa: ANN001
+        if self._playwright is not None:
+            return self._playwright
+        manager = self._get_playwright()
+        self._playwright_manager = manager
+        self._playwright = manager.__enter__()
+        return self._playwright
+
+    def close(self) -> None:
+        for context in self._playwright_contexts.values():
+            try:
+                context.close()
+            except Exception:  # noqa: BLE001
+                continue
+        self._playwright_contexts.clear()
+        if self._playwright_manager is not None:
+            try:
+                self._playwright_manager.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+        self._playwright_manager = None
+        self._playwright = None
 
     @staticmethod
     def _get_playwright():

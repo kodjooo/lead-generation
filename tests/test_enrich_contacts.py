@@ -223,10 +223,12 @@ def test_enrich_company_rotates_proxy_on_429(monkeypatch) -> None:
     assert calls[1] is not None
 
 
-def test_load_page_does_not_reuse_context_after_playwright_shutdown(monkeypatch) -> None:
+def test_load_page_reuses_single_live_playwright_session(monkeypatch) -> None:
     enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
 
     created_contexts = []
+    manager_enters = []
+    manager_exits = []
 
     class FakePage:
         def add_init_script(self, script: str) -> None:
@@ -252,8 +254,6 @@ def test_load_page_does_not_reuse_context_after_playwright_shutdown(monkeypatch)
             self.closed = False
 
         def new_page(self) -> FakePage:
-            if self.closed:
-                raise RuntimeError("context already closed")
             return FakePage()
 
         def close(self) -> None:
@@ -267,17 +267,22 @@ def test_load_page_does_not_reuse_context_after_playwright_shutdown(monkeypatch)
 
     class FakePlaywrightManager:
         def __enter__(self):
+            manager_enters.append(True)
             return SimpleNamespace(chromium=FakeChromium())
 
         def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            manager_exits.append(True)
             return None
 
     monkeypatch.setattr(enricher, "_get_playwright", lambda: FakePlaywrightManager())
 
     first = enricher._load_page("https://example.com", None)
     second = enricher._load_page("https://example.com/contact", None)
+    enricher.close()
 
     assert first.status == 200
     assert second.status == 200
-    assert len(created_contexts) == 2
-    assert all(context.closed for context in created_contexts)
+    assert len(created_contexts) == 1
+    assert manager_enters == [True]
+    assert manager_exits == [True]
+    assert created_contexts[0].closed is True
