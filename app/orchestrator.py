@@ -462,7 +462,7 @@ class PipelineOrchestrator:
                                             true
                                         ),
                                         '{contacts_backfill_last_attempt_at}',
-                                        to_jsonb(:attempted_at::text),
+                                        to_jsonb(CAST(:attempted_at AS text)),
                                         true
                                     ),
                                     updated_at = NOW()
