@@ -13,7 +13,7 @@ import httpx
 from app.config import get_settings
 
 LOGGER = logging.getLogger("app.generate_email")
-OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 DEFAULT_GENERATION_RETRIES = 3
 DEFAULT_RETRY_DELAYS_SECONDS = (20, 40, 60)
 
@@ -69,25 +69,27 @@ class EmailGenerationError(RuntimeError):
 
 
 class EmailGenerator:
-    """Инкапсулирует обращение к LLM и fallback-шаблон."""
+    """Инкапсулирует обращение к LLM."""
 
     def __init__(
         self,
         *,
-        model: str = "gpt-4.1-mini",
+        model: str | None = None,
         language: str = "ru",
         temperature: float = 0.4,
         timeout: float = 15.0,
         retry_attempts: int = DEFAULT_GENERATION_RETRIES,
         retry_delays_seconds: tuple[int, ...] = DEFAULT_RETRY_DELAYS_SECONDS,
+        reasoning_effort: str | None = None,
     ) -> None:
-        self.model = model
+        self.settings = get_settings()
+        self.model = model or self.settings.openai_email_model
+        self.reasoning_effort = reasoning_effort or self.settings.openai_reasoning_effort
         self.language = language
         self.temperature = temperature
         self.timeout = timeout
         self.retry_attempts = max(1, retry_attempts)
         self.retry_delays_seconds = retry_delays_seconds
-        self.settings = get_settings()
 
     def generate(
         self,
@@ -129,41 +131,52 @@ class EmailGenerator:
         homepage_excerpt = " ".join(company.highlights) if company.highlights else None
         return {
             "model": self.model,
+            "reasoning": {"effort": self.reasoning_effort},
+            "text": {"format": {"type": "json_schema", "name": "EmailTemplate", "schema": self._response_schema()}},
             "temperature": self.temperature,
-            "response_format": {"type": "json_schema", "json_schema": self._response_schema()},
-            "messages": [
+            "input": [
                 {
                     "role": "system",
-                    "content": (
-                        "Ты Марк Аборчи, специалист по AI-автоматизации. Твоя задача — писать "
-                        "персонализированные, человеческие письма на русском языке для компаний, "
-                        "которым можно помочь автоматизацией процессов с помощью нейросетей, Python, make.com или n8n. "
-                        "Избегай рекламного тона и превосходных степеней. Делай акцент на пользе: экономия времени, "
-                        "сокращение затрат, устранение рутины, повышение эффективности. Всегда используй JSON-ответ с полями subject и body. "
-                        "Структура письма фиксирована: тема передаёт идею оптимизации процессов компании (например, 'Идея по оптимизации процессов вашей компании') и тело состоит из блоков:\n"
-                        "1) Приветствие 'Добрый день!'.\n"
-                        "2) Короткое представление Марка и его подхода (нейросети, Python).\n"
-                        "3) Упоминание, чем занимается компания (используй предоставленный текст, не упоминай название). Добавь короткое наблюдение (1 предложение) о чём-то, что выделяет компанию: что тебя впечатлило, что показалось интересным.\n"
-                        "4) Описание конкретного процесса, который можно упростить с помощью AI, и ожидаемого эффекта (сократить задержки, уменьшить затраты и т.п.).\n"
-                        "5) Приглашение обсудить примеры.\n"
-                        "6) Завершение: 'С уважением,' + имя и должность.\n"
-                        "Структуру сохраняй, но формулировки темы и тела варьируй, чтобы письма не совпадали дословно."
-                    ),
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Ты Марк Аборчи, специалист по AI-автоматизации. Твоя задача — писать "
+                                "персонализированные, человеческие письма на русском языке для компаний, "
+                                "которым можно помочь автоматизацией процессов с помощью нейросетей, Python, make.com или n8n. "
+                                "Избегай рекламного тона и превосходных степеней. Делай акцент на пользе: экономия времени, "
+                                "сокращение затрат, устранение рутины, повышение эффективности. Всегда используй JSON-ответ с полями subject и body. "
+                                "Структура письма фиксирована: тема передаёт идею оптимизации процессов компании (например, 'Идея по оптимизации процессов вашей компании') и тело состоит из блоков:\n"
+                                "1) Приветствие 'Добрый день!'.\n"
+                                "2) Короткое представление Марка и его подхода (нейросети, Python).\n"
+                                "3) Упоминание, чем занимается компания (используй предоставленный текст, не упоминай название). Добавь короткое наблюдение (1 предложение) о чём-то, что выделяет компанию: что тебя впечатлило, что показалось интересным.\n"
+                                "4) Описание конкретного процесса, который можно упростить с помощью AI, и ожидаемого эффекта (сократить задержки, уменьшить затраты и т.п.).\n"
+                                "5) Приглашение обсудить примеры.\n"
+                                "6) Завершение: 'С уважением,' + имя и должность.\n"
+                                "Структуру сохраняй, но формулировки темы и тела варьируй, чтобы письма не совпадали дословно."
+                            ),
+                        }
+                    ],
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
+                    "content": [
                         {
-                            "company": {
-                                "homepage_excerpt": homepage_excerpt,
-                            },
-                            "guidelines": {
-                                "language": self.language,
-                                "avoid_marketing": True,
-                            },
-                        },
-                        ensure_ascii=False,
-                    ),
+                            "type": "input_text",
+                            "text": json.dumps(
+                                {
+                                    "company": {
+                                        "homepage_excerpt": homepage_excerpt,
+                                    },
+                                    "guidelines": {
+                                        "language": self.language,
+                                        "avoid_marketing": True,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    ],
                 },
             ],
         }
@@ -176,17 +189,13 @@ class EmailGenerator:
             "Content-Type": "application/json",
         }
         with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(OPENAI_CHAT_COMPLETIONS_URL, headers=headers, json=payload)
+            response = client.post(OPENAI_RESPONSES_URL, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
 
     def _parse_openai_response(self, response: Dict[str, object]) -> Optional[EmailTemplate]:
         try:
-            choices = response.get("choices", [])
-            if not choices:
-                return None
-            message = choices[0]["message"]  # type: ignore[index]
-            content = message.get("content")
+            content = response.get("output_text")
             if not content:
                 return None
             parsed = json.loads(content)

@@ -159,6 +159,8 @@ class Settings:
     yandex_sa_key_json: str | None
     yandex_enforce_night_window: bool
     openai_api_key: str
+    openai_email_model: str
+    openai_reasoning_effort: str
     email_sending_enabled: bool
     redis_url: str
     database: DatabaseSettings
@@ -304,6 +306,8 @@ def get_settings() -> Settings:
         yandex_sa_key_json=_env("YANDEX_CLOUD_SA_KEY_JSON") or None,
         yandex_enforce_night_window=_env_bool("YANDEX_ENFORCE_NIGHT_WINDOW", True),
         openai_api_key=_env("OPENAI_API_KEY"),
+        openai_email_model=_env("OPENAI_EMAIL_MODEL", "gpt-5-2025-08-07"),
+        openai_reasoning_effort=_env("OPENAI_REASONING_EFFORT", "low"),
         email_sending_enabled=_env_bool("EMAIL_SENDING_ENABLED", True),
         redis_url=_env("REDIS_URL", "redis://redis:6379/0"),
         database=db,

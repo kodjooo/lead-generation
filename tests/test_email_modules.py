@@ -112,8 +112,10 @@ def test_email_generator_raises_without_api_key(monkeypatch: pytest.MonkeyPatch)
 def test_email_generator_retries_and_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_EMAIL_MODEL", "gpt-5-2025-08-07")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "low")
 
-    respx.post("https://api.openai.com/v1/chat/completions").mock(
+    respx.post("https://api.openai.com/v1/responses").mock(
         return_value=httpx.Response(500, json={"error": {"message": "temporary"}})
     )
 
@@ -135,6 +137,8 @@ def test_email_generator_retries_and_raises(monkeypatch: pytest.MonkeyPatch) -> 
 def test_email_generator_uses_progressive_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_EMAIL_MODEL", "gpt-5-2025-08-07")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "low")
 
     call_count = {"value": 0}
 
@@ -163,17 +167,13 @@ def test_email_generator_uses_progressive_backoff(monkeypatch: pytest.MonkeyPatc
 def test_email_generator_calls_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_settings_cache()
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_EMAIL_MODEL", "gpt-5-2025-08-07")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "low")
 
     response_json = {
-        "choices": [
-            {
-                "message": {
-                    "content": json.dumps({"subject": "Тема", "body": "Текст"})
-                }
-            }
-        ]
+        "output_text": json.dumps({"subject": "Тема", "body": "Текст"})
     }
-    respx.post("https://api.openai.com/v1/chat/completions").mock(
+    route = respx.post("https://api.openai.com/v1/responses").mock(
         return_value=httpx.Response(200, json=response_json)
     )
 
@@ -187,6 +187,9 @@ def test_email_generator_calls_openai(monkeypatch: pytest.MonkeyPatch) -> None:
     assert generated.template.body == "Текст"
     assert generated.request_payload is not None
     assert generated.used_fallback is False
+    assert generated.request_payload["model"] == "gpt-5-2025-08-07"
+    assert generated.request_payload["reasoning"] == {"effort": "low"}
+    assert route.called
 
     reset_settings_cache()
 
@@ -309,6 +312,8 @@ def test_email_sender_queue_skips_invalid_email(monkeypatch: pytest.MonkeyPatch)
 def test_email_sender_marks_failed_on_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
     reset_settings_cache()
+    monkeypatch.setenv("EMAIL_SENDING_ENABLED", "true")
+    reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     monkeypatch.setattr(sender, "_prepare_route", lambda email: MagicMock(provider="gmail", channel=MagicMock(), mx_result=MXResult("OTHER", [], False), reply_to=None, fallback=False))
@@ -339,6 +344,8 @@ def test_email_sender_marks_failed_on_network_error(monkeypatch: pytest.MonkeyPa
 
 def test_email_sender_deliver_skips_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession(opt_out_emails=["skip@example.com"])
+    reset_settings_cache()
+    monkeypatch.setenv("EMAIL_SENDING_ENABLED", "true")
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
@@ -384,6 +391,8 @@ def test_email_sender_deliver_skips_opt_out(monkeypatch: pytest.MonkeyPatch) -> 
 def test_email_sender_deliver_skips_invalid_email(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
     reset_settings_cache()
+    monkeypatch.setenv("EMAIL_SENDING_ENABLED", "true")
+    reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
     sender.mx_router = MagicMock()
@@ -422,6 +431,8 @@ def test_email_sender_deliver_skips_invalid_email(monkeypatch: pytest.MonkeyPatc
 
 def test_email_sender_deliver_success(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
+    reset_settings_cache()
+    monkeypatch.setenv("EMAIL_SENDING_ENABLED", "true")
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
@@ -469,6 +480,8 @@ def test_email_sender_deliver_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_email_sender_deliver_rejects_repeat_send(monkeypatch: pytest.MonkeyPatch) -> None:
     session = DummySession()
+    reset_settings_cache()
+    monkeypatch.setenv("EMAIL_SENDING_ENABLED", "true")
     reset_settings_cache()
 
     sender = EmailSender(session_factory=lambda: session, use_starttls=False)  # type: ignore[arg-type]
