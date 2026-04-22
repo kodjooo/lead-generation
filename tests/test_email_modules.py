@@ -38,6 +38,9 @@ class DummyUpdateResult:
     def scalar_one(self) -> str:
         return self._value
 
+    def first(self) -> Any:
+        return (self._value,)
+
 
 class DummyScalarResult:
     def __init__(self, value: Any) -> None:
