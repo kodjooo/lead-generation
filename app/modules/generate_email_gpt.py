@@ -132,7 +132,14 @@ class EmailGenerator:
         return {
             "model": self.model,
             "reasoning": {"effort": self.reasoning_effort},
-            "text": {"format": {"type": "json_schema", "name": "EmailTemplate", "schema": self._response_schema()}},
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "EmailTemplate",
+                    "schema": self._response_schema(),
+                    "strict": True,
+                }
+            },
             "temperature": self.temperature,
             "input": [
                 {
@@ -206,13 +213,11 @@ class EmailGenerator:
 
     def _response_schema(self) -> Dict[str, object]:
         return {
-            "name": "EmailTemplate",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "subject": {"type": "string"},
-                    "body": {"type": "string"},
-                },
-                "required": ["subject", "body"],
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string"},
+                "body": {"type": "string"},
             },
+            "required": ["subject", "body"],
+            "additionalProperties": False,
         }
