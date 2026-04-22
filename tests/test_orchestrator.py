@@ -16,4 +16,5 @@ def test_company_backfill_runs_only_once() -> None:
     normalized_sql = " ".join(SELECT_COMPANIES_WITHOUT_CONTACTS_SQL.split())
     assert "c.status = 'new'" in normalized_sql
     assert "c.status = 'contacts_not_found'" in normalized_sql
-    assert "contacts_backfill_done_at" in normalized_sql
+    assert "contacts_backfill_attempts" in normalized_sql
+    assert "< 3" in normalized_sql

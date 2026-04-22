@@ -98,7 +98,7 @@ WITH candidates AS (
           c.status = 'new'
           OR (
               c.status = 'contacts_not_found'
-              AND COALESCE(c.attributes ->> 'contacts_backfill_done_at', '') = ''
+              AND COALESCE((c.attributes ->> 'contacts_backfill_attempts')::int, 0) < 3
           )
       )
       AND NOT EXISTS (
@@ -454,14 +454,24 @@ class PipelineOrchestrator:
                             text(
                                 """
                                 UPDATE companies
-                                SET attributes = attributes || CAST(:patch AS JSONB),
+                                SET attributes = jsonb_set(
+                                        jsonb_set(
+                                            attributes,
+                                            '{contacts_backfill_attempts}',
+                                            to_jsonb(COALESCE((attributes ->> 'contacts_backfill_attempts')::int, 0) + 1),
+                                            true
+                                        ),
+                                        '{contacts_backfill_last_attempt_at}',
+                                        to_jsonb(:attempted_at::text),
+                                        true
+                                    ),
                                     updated_at = NOW()
                                 WHERE id = :id
                                 """
                             ),
                             {
                                 "id": row["id"],
-                                "patch": json.dumps({"contacts_backfill_done_at": datetime.now(timezone.utc).isoformat()}),
+                                "attempted_at": datetime.now(timezone.utc).isoformat(),
                             },
                         )
                     if inserted:
