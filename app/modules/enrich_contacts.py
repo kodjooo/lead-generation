@@ -77,12 +77,15 @@ class ContactEnricher:
         self.timeout = enrichment.timeout_seconds if timeout == 10.0 else timeout
         self.max_redirects = enrichment.max_redirects
         self.headers = {
-            "User-Agent": "LeadGenBot/1.0 (+https://example.com/bot-info)",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/135.0.0.0 Safari/537.36"
+            ),
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
         }
         self.proxy_urls = enrichment.proxy_urls
         self._proxy_health: Dict[str, float] = {}
-        self._playwright_contexts: Dict[str | None, object] = {}
         self._profile_dirs: Dict[str | None, Path] = {}
 
     def enrich_company(
@@ -279,13 +282,10 @@ class ContactEnricher:
                 return _LoadedPage(status=status, html=page.content())
             finally:
                 page.close()
+                context.close()
 
     def _browser_context_for_proxy(self, playwright, proxy_url: Optional[str]):  # noqa: ANN001
         cache_key = proxy_url or "__direct__"
-        cached = self._playwright_contexts.get(cache_key)
-        if cached is not None:
-            return cached
-
         PLAYWRIGHT_PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
         profile_dir = self._profile_dirs.get(cache_key)
         if profile_dir is None:
@@ -293,7 +293,7 @@ class ContactEnricher:
             profile_dir.mkdir(parents=True, exist_ok=True)
             self._profile_dirs[cache_key] = profile_dir
 
-        context = playwright.chromium.launch_persistent_context(
+        return playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
             headless=True,
             proxy={"server": proxy_url} if proxy_url else None,
@@ -304,8 +304,6 @@ class ContactEnricher:
             ignore_https_errors=True,
             extra_http_headers=self.headers,
         )
-        self._playwright_contexts[cache_key] = context
-        return context
 
     @staticmethod
     def _get_playwright():

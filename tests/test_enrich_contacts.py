@@ -221,3 +221,63 @@ def test_enrich_company_rotates_proxy_on_429(monkeypatch) -> None:
     assert inserted == ["contact-1"]
     assert calls[0] is None
     assert calls[1] is not None
+
+
+def test_load_page_does_not_reuse_context_after_playwright_shutdown(monkeypatch) -> None:
+    enricher = ContactEnricher(session_factory=lambda: None)  # type: ignore[arg-type]
+
+    created_contexts = []
+
+    class FakePage:
+        def add_init_script(self, script: str) -> None:
+            return None
+
+        def set_extra_http_headers(self, headers):  # noqa: ANN001
+            return None
+
+        def goto(self, url: str, wait_until: str, timeout: int):  # noqa: ARG002
+            return SimpleNamespace(status=200)
+
+        def wait_for_timeout(self, timeout_ms: int) -> None:  # noqa: ARG002
+            return None
+
+        def content(self) -> str:
+            return "<html><body>info@example.com</body></html>"
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def new_page(self) -> FakePage:
+            if self.closed:
+                raise RuntimeError("context already closed")
+            return FakePage()
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeChromium:
+        def launch_persistent_context(self, **kwargs):  # noqa: ANN003, ARG002
+            context = FakeContext()
+            created_contexts.append(context)
+            return context
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return SimpleNamespace(chromium=FakeChromium())
+
+        def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+            return None
+
+    monkeypatch.setattr(enricher, "_get_playwright", lambda: FakePlaywrightManager())
+
+    first = enricher._load_page("https://example.com", None)
+    second = enricher._load_page("https://example.com/contact", None)
+
+    assert first.status == 200
+    assert second.status == 200
+    assert len(created_contexts) == 2
+    assert all(context.closed for context in created_contexts)
