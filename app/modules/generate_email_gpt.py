@@ -140,7 +140,6 @@ class EmailGenerator:
                     "strict": True,
                 }
             },
-            "temperature": self.temperature,
             "input": [
                 {
                     "role": "system",
