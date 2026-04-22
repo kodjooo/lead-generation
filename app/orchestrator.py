@@ -139,7 +139,7 @@ WITH locked_contacts AS (
           FROM opt_out_registry o
           WHERE LOWER(o.contact_value) = LOWER(ct.value)
       )
-    ORDER BY ct.first_seen_at
+    ORDER BY md5(ct.id::text)
     LIMIT :limit
     FOR UPDATE SKIP LOCKED
 )
@@ -154,7 +154,7 @@ SELECT
 FROM locked_contacts lc
 JOIN contacts ct ON ct.id = lc.id
 JOIN companies c ON c.id = ct.company_id
-ORDER BY lc.first_seen_at;
+ORDER BY md5(ct.id::text);
 """
 
 SELECT_SERP_QUERY_DETAILS_SQL = """
