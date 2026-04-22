@@ -54,6 +54,7 @@ class DummySession:
     def __init__(self, opt_out_emails: Optional[List[str]] = None) -> None:
         self.opt_out_emails = {email.lower() for email in (opt_out_emails or [])}
         self.calls: List[Tuple[str, Dict[str, Any]]] = []
+        self.claimed_outreach_ids: set[str] = set()
 
     def execute(self, statement, params=None):  # noqa: ANN001
         sql = statement.text if hasattr(statement, "text") else str(statement)
@@ -77,6 +78,13 @@ class DummySession:
         if "INSERT INTO outreach_messages" in sql:
             idx = len([c for c in self.calls if "INSERT INTO outreach_messages" in c[0]])
             return DummyInsertResult(f"outreach-{idx}")
+
+        if "SET status = 'sending'" in sql and "RETURNING id" in sql:
+            outreach_id = params.get("id")
+            if outreach_id in self.claimed_outreach_ids:
+                return DummySelectResult([])
+            self.claimed_outreach_ids.add(outreach_id)
+            return DummySelectResult([(outreach_id,)])
 
         if "UPDATE outreach_messages" in sql:
             return DummyUpdateResult(params.get("id", "outreach-update"))
