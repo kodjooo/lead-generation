@@ -77,7 +77,7 @@ class EmailGenerator:
         model: str | None = None,
         language: str = "ru",
         temperature: float = 0.4,
-        timeout: float = 15.0,
+        timeout: float = 60.0,
         retry_attempts: int = DEFAULT_GENERATION_RETRIES,
         retry_delays_seconds: tuple[int, ...] = DEFAULT_RETRY_DELAYS_SECONDS,
         reasoning_effort: str | None = None,
@@ -202,6 +202,17 @@ class EmailGenerator:
     def _parse_openai_response(self, response: Dict[str, object]) -> Optional[EmailTemplate]:
         try:
             content = response.get("output_text")
+            if not content:
+                output_items = response.get("output", [])
+                for item in output_items if isinstance(output_items, list) else []:
+                    if not isinstance(item, dict) or item.get("type") != "message":
+                        continue
+                    for part in item.get("content", []):
+                        if isinstance(part, dict) and part.get("type") == "output_text" and part.get("text"):
+                            content = part["text"]
+                            break
+                    if content:
+                        break
             if not content:
                 return None
             parsed = json.loads(content)
